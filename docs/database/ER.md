@@ -259,7 +259,7 @@ erDiagram
 
 以下规则由迁移 SQL 的约束直接保证，应用层无需也不得重复实现为“唯一真相”：
 
-1. **主键**：15 张表的主键均为 `BIGINT UNSIGNED NOT NULL AUTO_INCREMENT`；`order_snapshots` 以 `order_id` 作主键，保证一单一快照。
+1. **主键**：15 张表的主键均为 `BIGINT UNSIGNED NOT NULL`，其中 **14 张表**为 `AUTO_INCREMENT`。唯一的例外是 `order_snapshots`：它以 `order_id` 作为**共享主键**（非自增，由被快照的订单 ID 赋值）。因此数据库只能保证"一个订单**至多**一份快照"，**不能**保证"每个订单**恰好**有一份快照"。恰好一份必须由下单事务在写入订单的同一个事务内创建快照来保证，责任任务为 BE-08。
 2. **唯一约束**（同名唯一索引）：
    - `uk_campuses_code(code)`
    - `uk_users_openid(openid)`
@@ -280,6 +280,8 @@ erDiagram
    - `chk_item_images_sort_no`：`sort_no BETWEEN 1 AND 9`
    - `chk_orders_buyer_not_seller`：`buyer_id <> seller_id`；`chk_orders_amount`：`amount > 0`
    - `chk_reviews_rating`：`rating BETWEEN 1 AND 5`；`chk_reviews_reviewer_not_reviewee`：`reviewer_id <> reviewee_id`；`chk_reviews_status`：`status IN ('VISIBLE','HIDDEN')`
+
+   **CHECK 覆盖范围有限**：以上 14 个约束中，只有 5 个是枚举取值约束——`campuses.status`、`users.role`、`users.status`、`users.certification_status`、`reviews.status`。**其余枚举列在数据库中只是 `VARCHAR(32)`，没有 CHECK 约束**，包括 `certifications.type`、`certifications.status`、`categories.status`、`file_objects.biz_type`、`file_objects.status`、`items.condition_level`、`items.status`、`orders.trade_mode`、`orders.status`、`order_events.action`/`from_status`/`to_status`、`notifications.type`/`biz_type`。这些列的取值合法性只能由应用层校验保证，不得描述为"数据库已约束"。
 5. **非空与默认值**：`created_at`/`updated_at` 一律 `NOT NULL` 且无数据库默认值与自动更新；`status`、`version`、计数字段等默认值由 DDL 固定。
 6. **类型与精度**：金额为 `DECIMAL(10,2)`，评分汇总为 `DECIMAL(3,2)`，计数为 `INT UNSIGNED`，并发版本为 `BIGINT NOT NULL DEFAULT 0`。
 7. **外键列索引**：每个外键列都有可用索引（组合索引的最左前缀或独立索引），保证外键校验和相关查询不使用全表扫描。
@@ -288,12 +290,12 @@ erDiagram
 
 MySQL 没有部分唯一索引，因此以下规则无法用普通索引表达，必须由后续任务在应用层事务与并发校验中实现：
 
-1. **单用户一个 PENDING 认证**：`certifications` 无法用普通唯一索引表达“同一 `user_id` 只能有一条 `status='PENDING'`”，由认证模块在事务中先查后写，并以 `CERTIFICATION_PENDING_EXISTS` 返回冲突。
+1. **单用户一个 PENDING 认证**：`certifications` 无法用普通唯一索引表达"同一 `user_id` 只能有一条 `status='PENDING'`"。**注意：仅靠"先查后写"不足以保证并发唯一**——两个并发提交可能都读到"当前没有 PENDING"，随后各自插入一条。认证模块必须先以 `SELECT ... FOR UPDATE` 锁定该用户行（或采用等价的串行化手段）再校验并写入，冲突时以 `CERTIFICATION_PENDING_EXISTS` 返回。责任任务为 BE-05。
 2. **单商品一个活动订单**：`orders` 无法在数据库层限制“同一 `item_id` 只能存在一条 `PENDING_CONFIRMATION`/`CONFIRMED`/`PENDING_RECEIPT` 订单”，由商品乐观锁（`items.version`）作为主控制、订单查询作为二次校验，冲突映射 `ITEM_CONCURRENTLY_RESERVED`。
 3. **两级分类**：数据库不阻止三级分类，也不阻止把自己或后代设为父级；由分类模块校验父级必须是一级且启用。
 4. **商品图片 1～9 张**：数据库只限制 `sort_no` 落在 1～9，商品至少一张、最多九张的总数由商品模块事务校验。
 5. **一级分类同名**：`uk_categories_parent_name(parent_id, name)` 在 `parent_id IS NULL` 时因 MySQL 允许多个 NULL 而不生效，一级分类重名由分类模块校验。
-6. **只追加语义**：`order_snapshots`、`order_events`、`audit_logs` 在数据库中只建 INSERT 路径，对应的应用层不得提供 UPDATE/DELETE 用例；历史保留通过业务状态（如 `reviews.status`）而非删除实现。
+6. **只追加语义**：`order_snapshots`、`order_events`、`audit_logs` 的"只追加"是**应用层约定，不是数据库强制**——迁移 SQL 没有撤销这些表的 UPDATE/DELETE 权限，也没有触发器阻止修改。应用层不得为它们提供 UPDATE/DELETE 用例；历史保留通过业务状态（如 `reviews.status`）而非删除实现。如需数据库级强制，必须另开任务评估权限或触发器方案。
 7. **汇总字段一致性**：`users.average_rating`/`users.review_count`、`items.view_count`/`favorites` 计数由评价、商品与收藏模块在同一事务内维护。
 8. **订单与商品状态联动**：下单锁商品、取消释放商品、收货置 `SOLD` 等跨表状态变化必须在同一事务内完成。
 

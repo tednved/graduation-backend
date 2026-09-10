@@ -23,36 +23,65 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * DB-01 迁移集成测试。
  *
- * <p>必须连接真实 MySQL 8 实例，不使用 H2 / SQLite / mock 替代。数据库为空，
+ * <p>必须连接真实 MySQL 8 实例，不使用 H2 / SQLite / mock 替代。目标 schema 为空，
  * Flyway 从 {@code classpath:db/migration} 执行 V1～V5。
  *
  * <p>数据源有两种来源，按以下优先级解析：
  * <ol>
- *   <li>提供系统属性 {@code db.it.url} 时，直接连接该真实 MySQL 8 实例
- *       （用户名/密码取 {@code db.it.username} / {@code db.it.password}）。该实例对应的
- *       schema 必须为空，否则“空库执行 5 个迁移”的断言不成立。</li>
- *   <li>未提供时，使用项目已有 Testcontainers 依赖启动 {@code mysql:8.0} 容器（需要 Docker）。</li>
+ *   <li>未提供 {@code db.it.url} 时，使用项目已有 Testcontainers 依赖启动 {@code mysql:8.0} 容器
+ *       （需要 Docker）。容器每次全新启动，schema 由构造保证为空。</li>
+ *   <li>提供 {@code db.it.url} 时，连接该外部真实 MySQL 8 实例。此路径必须先通过
+ *       {@link #assertTargetIsDisposable} 的前置保护，否则不得执行任何迁移。</li>
  * </ol>
+ *
+ * <p>外部模式的前置保护（在 {@code Flyway.migrate()} 之前执行）要求全部满足：
+ * <ul>
+ *   <li>显式测试用途确认 {@code -Ddb.it.confirm=}<b>{@value #EXTERNAL_CONFIRMATION}</b>；
+ *       缺少或值不符即拒绝，且此时尚未建立任何连接；</li>
+ *   <li>显式用户名 {@code -Ddb.it.username} 或环境变量 {@code DB_IT_USERNAME}，不默认为 {@code root}；</li>
+ *   <li>JDBC URL 指定了 schema（连接后 {@code Connection.getCatalog()} 非空）；</li>
+ *   <li>该 schema 内没有任何用户对象（表、视图、存储程序、触发器）。</li>
+ * </ul>
+ * 任一条件不满足即抛出异常，<b>零迁移、零业务写入</b>；本测试不调用 {@code Flyway.clean()}，
+ * 也不执行任何 {@code DROP DATABASE}／{@code DROP TABLE}。密码通过 {@code -Ddb.it.password}
+ * 或环境变量 {@code DB_IT_PASSWORD} 输入，不作为默认值写死在代码里。
  *
  * <p>运行命令（二选一）：
  * <pre>
  * .\mvnw.cmd -Dtest=FlywayMigrationIT test
- * .\mvnw.cmd -Dtest=FlywayMigrationIT -Ddb.it.url="jdbc:mysql://127.0.0.1:3306/&lt;空库&gt;" ^
- *     -Ddb.it.username=&lt;user&gt; -Ddb.it.password=&lt;password&gt; test
+ *
+ * .\mvnw.cmd -Dtest=FlywayMigrationIT ^
+ *     "-Ddb.it.url=jdbc:mysql://127.0.0.1:3306/&lt;专用空 schema&gt;" ^
+ *     "-Ddb.it.username=&lt;user&gt;" "-Ddb.it.confirm=DB-01-FlywayMigrationIT" test
  * </pre>
+ * 外部模式另可用环境变量 {@code DB_IT_USERNAME} / {@code DB_IT_PASSWORD} 传入凭据，避免出现在命令行。
+ * 注意 {@code mvnw.cmd} 是 Windows 批处理，URL 中若含 {@code &} 会被 {@code cmd.exe} 拆分，
+ * 因此外部模式的 URL 不应携带查询参数。
  */
 class FlywayMigrationIT {
 
     private static final String MIGRATION_LOCATION = "classpath:db/migration";
 
     private static final String FLYWAY_HISTORY_TABLE = "flyway_schema_history";
+
+    /** 外部模式必须原样提供的测试用途确认值，用于阻止误连已有库或生产库。 */
+    static final String EXTERNAL_CONFIRMATION = "DB-01-FlywayMigrationIT";
+
+    private static final String URL_PROPERTY = "db.it.url";
+    private static final String USERNAME_PROPERTY = "db.it.username";
+    private static final String PASSWORD_PROPERTY = "db.it.password";
+    private static final String CONFIRM_PROPERTY = "db.it.confirm";
+    private static final String USERNAME_ENV = "DB_IT_USERNAME";
+    private static final String PASSWORD_ENV = "DB_IT_PASSWORD";
 
     private static final Set<String> BUSINESS_TABLES = Set.of(
             "campuses", "users", "refresh_tokens",
@@ -69,7 +98,7 @@ class FlywayMigrationIT {
 
     @BeforeAll
     static void migrateEmptyDatabase() {
-        String externalUrl = System.getProperty("db.it.url");
+        String externalUrl = System.getProperty(URL_PROPERTY);
         if (externalUrl == null || externalUrl.isBlank()) {
             container = new MySQLContainer("mysql:8.0");
             container.start();
@@ -78,8 +107,9 @@ class FlywayMigrationIT {
             password = container.getPassword();
         } else {
             jdbcUrl = externalUrl;
-            username = System.getProperty("db.it.username", "root");
-            password = System.getProperty("db.it.password", "");
+            username = requiredSetting(USERNAME_PROPERTY, USERNAME_ENV);
+            password = optionalSetting(PASSWORD_PROPERTY, PASSWORD_ENV);
+            assertTargetIsDisposable(externalUrl, username, password, System.getProperty(CONFIRM_PROPERTY));
         }
         firstMigration = flyway().migrate();
     }
@@ -223,6 +253,167 @@ class FlywayMigrationIT {
         }
     }
 
+    @Test
+    @DisplayName("外部模式保护: 缺少测试用途确认参数即拒绝，且不建立任何连接")
+    void rejectsExternalModeWithoutConfirmation() {
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> assertTargetIsDisposable("jdbc:mysql://127.0.0.1:3306/whatever", "someone", "",
+                        null));
+        assertTrue(failure.getMessage().contains(CONFIRM_PROPERTY),
+                "拒绝原因应指明缺少 " + CONFIRM_PROPERTY + "，实际: " + failure.getMessage());
+    }
+
+    @Test
+    @DisplayName("外部模式保护: 确认值不符或缺少显式用户名即拒绝")
+    void rejectsExternalModeWithWrongConfirmationOrMissingUsername() {
+        assertThrows(IllegalStateException.class,
+                () -> assertTargetIsDisposable("jdbc:mysql://127.0.0.1:3306/whatever", "someone", "",
+                        "not-the-agreed-token"));
+        assertThrows(IllegalStateException.class,
+                () -> assertTargetIsDisposable("jdbc:mysql://127.0.0.1:3306/whatever", "  ", "",
+                        EXTERNAL_CONFIRMATION));
+    }
+
+    @Test
+    @DisplayName("外部模式回归(容器): 空 schema 通过前置保护")
+    void acceptsEmptySchema() throws SQLException {
+        assumeTrue(container != null, "仅容器模式执行：外部模式的目标空 schema 由调用方提供，不在此断言");
+        String schema = createDisposableSchema("it_empty");
+        assertDoesNotThrow(() -> assertTargetIsDisposable(
+                containerUrl(schema), container.getUsername(), container.getPassword(), EXTERNAL_CONFIRMATION));
+    }
+
+    @Test
+    @DisplayName("外部模式回归(容器): 已有哨兵表的 schema 被拒绝，哨兵与迁移历史保持不变")
+    void rejectsSchemaWithSentinelTableAndLeavesItUnchanged() throws SQLException {
+        assumeTrue(container != null, "仅容器模式执行：哨兵库只建在容器内，不触碰本机业务库");
+        String schema = createDisposableSchema("it_sentinel");
+        try (Connection connection = containerConnection(schema);
+             Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE `sentinel_marker` (`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, "
+                    + "PRIMARY KEY (`id`)) ENGINE = InnoDB");
+        }
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> assertTargetIsDisposable(
+                        containerUrl(schema), container.getUsername(), container.getPassword(), EXTERNAL_CONFIRMATION));
+        assertTrue(failure.getMessage().contains("sentinel_marker"),
+                "拒绝原因应列出已存在的对象，实际: " + failure.getMessage());
+
+        try (Connection connection = containerConnection(schema)) {
+            assertEquals(List.of("sentinel_marker"), baseTables(connection),
+                    "哨兵表必须原样保留，且不得被迁移创建任何业务表");
+            assertEquals(0, count(connection, "SELECT COUNT(*) FROM information_schema.tables "
+                            + "WHERE table_schema = DATABASE() AND table_name = '" + FLYWAY_HISTORY_TABLE + "'"),
+                    "被拒绝的 schema 不得建立 Flyway 迁移历史");
+        }
+    }
+
+    /**
+     * 外部 MySQL 模式的前置保护，必须在任何 {@code migrate()} 之前调用。
+     *
+     * <p>全部校验通过时正常返回；任一不满足即抛出 {@link IllegalStateException}，调用方不得继续迁移。
+     * 本方法只读，不执行 DDL/DML，也不调用 {@code clean()} 或任何 {@code DROP} 语句。
+     *
+     * @param url          外部实例 JDBC URL，必须已指定 schema
+     * @param user         显式用户名，不得为空或默认 root
+     * @param secret       密码，可为空字符串
+     * @param confirmation 测试用途确认值，必须等于 {@link #EXTERNAL_CONFIRMATION}
+     */
+    static void assertTargetIsDisposable(String url, String user, String secret, String confirmation) {
+        if (confirmation == null || !EXTERNAL_CONFIRMATION.equals(confirmation.trim())) {
+            throw new IllegalStateException("外部 MySQL 模式要求显式确认目标为专用空 schema：请传入 -D"
+                    + CONFIRM_PROPERTY + "=" + EXTERNAL_CONFIRMATION);
+        }
+        if (user == null || user.isBlank()) {
+            throw new IllegalStateException("外部 MySQL 模式要求显式用户名，不接受默认值；请传入 -D"
+                    + USERNAME_PROPERTY + " 或环境变量 " + USERNAME_ENV);
+        }
+        if (url == null || url.isBlank()) {
+            throw new IllegalStateException("外部 MySQL 模式要求提供 JDBC URL");
+        }
+
+        try (Connection connection = DriverManager.getConnection(url, user, secret)) {
+            String schema = connection.getCatalog();
+            if (schema == null || schema.isBlank()) {
+                throw new IllegalStateException("外部 MySQL 模式的 JDBC URL 必须指定 schema，当前未指定任何 schema");
+            }
+            List<String> existingObjects = userObjects(connection);
+            if (!existingObjects.isEmpty()) {
+                throw new IllegalStateException("目标 schema `" + schema + "` 非空，已存在 "
+                        + existingObjects.size() + " 个用户对象 " + existingObjects
+                        + "；拒绝迁移。请改用一个专用的空 schema。");
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException("外部 MySQL 模式无法连接或无法检查目标 schema："
+                    + failure.getMessage(), failure);
+        }
+    }
+
+    private static List<String> userObjects(Connection connection) throws SQLException {
+        List<String> objects = new ArrayList<>();
+        objects.addAll(query(connection, "SELECT CONCAT('table:', table_name) FROM information_schema.tables "
+                + "WHERE table_schema = DATABASE() AND table_type IN ('BASE TABLE', 'VIEW')"));
+        objects.addAll(query(connection, "SELECT CONCAT('routine:', routine_name) FROM information_schema.routines "
+                + "WHERE routine_schema = DATABASE()"));
+        objects.addAll(query(connection, "SELECT CONCAT('trigger:', trigger_name) FROM information_schema.triggers "
+                + "WHERE trigger_schema = DATABASE()"));
+        return objects;
+    }
+
+    private static List<String> baseTables(Connection connection) throws SQLException {
+        return query(connection, "SELECT table_name FROM information_schema.tables "
+                + "WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY table_name");
+    }
+
+    private static List<String> query(Connection connection, String sql) throws SQLException {
+        List<String> values = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                values.add(resultSet.getString(1));
+            }
+        }
+        return values;
+    }
+
+    /** 在容器内建立一个独立的空 schema，仅用于回归用例；外部模式不会调用本方法。 */
+    private static String createDisposableSchema(String prefix) throws SQLException {
+        String schema = prefix + "_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        try (Connection connection = DriverManager.getConnection(
+                container.getJdbcUrl(), container.getUsername(), container.getPassword());
+             Statement statement = connection.createStatement()) {
+            statement.execute("CREATE DATABASE `" + schema + "` "
+                    + "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+        }
+        return schema;
+    }
+
+    private static String containerUrl(String schema) {
+        return "jdbc:mysql://" + container.getHost() + ":" + container.getMappedPort(3306) + "/" + schema;
+    }
+
+    private static Connection containerConnection(String schema) throws SQLException {
+        return DriverManager.getConnection(containerUrl(schema), container.getUsername(), container.getPassword());
+    }
+
+    private static String requiredSetting(String property, String environmentVariable) {
+        String value = optionalSetting(property, environmentVariable);
+        if (value.isBlank()) {
+            throw new IllegalStateException("外部 MySQL 模式要求显式提供 " + property
+                    + "（或环境变量 " + environmentVariable + "）");
+        }
+        return value;
+    }
+
+    private static String optionalSetting(String property, String environmentVariable) {
+        String value = System.getProperty(property);
+        if (value == null || value.isBlank()) {
+            value = System.getenv(environmentVariable);
+        }
+        return value == null ? "" : value;
+    }
+
     private static Flyway flyway() {
         return Flyway.configure()
                 .dataSource(jdbcUrl, username, password)
@@ -243,7 +434,7 @@ class FlywayMigrationIT {
     }
 
     /**
-     * 插入测试用户。前置数据只存在于测试容器中，且调用方必须回滚。
+     * 插入测试用户。前置数据只存在于测试库中，且调用方必须回滚。
      *
      * @return 新用户主键
      */
