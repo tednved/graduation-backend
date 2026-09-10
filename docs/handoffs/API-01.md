@@ -8,7 +8,7 @@
 | 任务包版本 | v1.0（2026-09-10） |
 | 分支 | `docs/API-01-openapi-contract` |
 | 基线 | `origin/main` = `bea0f7b`（DB-02 已 squash 合并，数据库基线 Flyway V6） |
-| 状态 | **IN_PROGRESS / Draft PR** —— 契约尚未通过前后端独立审查 |
+| 状态 | **IN_PROGRESS / Draft PR** —— [后端 PR #4](https://github.com/tednved/graduation-backend/pull/4)（Draft，未转 REVIEW），契约尚未通过前后端独立审查 |
 | 契约唯一源文件 | `backend/openapi.yaml` |
 
 本任务只交付契约、契约说明与校验脚本，不涉及业务代码、`pom.xml` 或运行时依赖。
