@@ -2,11 +2,10 @@ package com.graduation.backend.database;
 
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.output.MigrateResult;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mysql.MySQLContainer;
 
 import java.sql.Connection;
@@ -31,13 +30,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * DB-01 迁移集成测试。
  *
- * <p>必须连接真实 MySQL 8 实例：使用项目已有 Testcontainers 依赖启动 MySQL 容器，
- * 不使用 H2 / SQLite / mock 替代。容器内数据库为空，Flyway 从 {@code classpath:db/migration}
- * 执行 V1～V5。
+ * <p>必须连接真实 MySQL 8 实例，不使用 H2 / SQLite / mock 替代。数据库为空，
+ * Flyway 从 {@code classpath:db/migration} 执行 V1～V5。
  *
- * <p>运行命令：{@code .\mvnw.cmd -Dtest=FlywayMigrationIT test}（需要可用的 Docker 环境）。
+ * <p>数据源有两种来源，按以下优先级解析：
+ * <ol>
+ *   <li>提供系统属性 {@code db.it.url} 时，直接连接该真实 MySQL 8 实例
+ *       （用户名/密码取 {@code db.it.username} / {@code db.it.password}）。该实例对应的
+ *       schema 必须为空，否则“空库执行 5 个迁移”的断言不成立。</li>
+ *   <li>未提供时，使用项目已有 Testcontainers 依赖启动 {@code mysql:8.0} 容器（需要 Docker）。</li>
+ * </ol>
+ *
+ * <p>运行命令（二选一）：
+ * <pre>
+ * .\mvnw.cmd -Dtest=FlywayMigrationIT test
+ * .\mvnw.cmd -Dtest=FlywayMigrationIT -Ddb.it.url="jdbc:mysql://127.0.0.1:3306/&lt;空库&gt;" ^
+ *     -Ddb.it.username=&lt;user&gt; -Ddb.it.password=&lt;password&gt; test
+ * </pre>
  */
-@Testcontainers
 class FlywayMigrationIT {
 
     private static final String MIGRATION_LOCATION = "classpath:db/migration";
@@ -50,14 +60,35 @@ class FlywayMigrationIT {
             "favorites", "orders", "order_snapshots", "order_events",
             "reviews", "notifications", "audit_logs");
 
-    @Container
-    private static final MySQLContainer MYSQL = new MySQLContainer("mysql:8.0");
+    private static MySQLContainer container;
+    private static String jdbcUrl;
+    private static String username;
+    private static String password;
 
     private static MigrateResult firstMigration;
 
     @BeforeAll
     static void migrateEmptyDatabase() {
+        String externalUrl = System.getProperty("db.it.url");
+        if (externalUrl == null || externalUrl.isBlank()) {
+            container = new MySQLContainer("mysql:8.0");
+            container.start();
+            jdbcUrl = container.getJdbcUrl();
+            username = container.getUsername();
+            password = container.getPassword();
+        } else {
+            jdbcUrl = externalUrl;
+            username = System.getProperty("db.it.username", "root");
+            password = System.getProperty("db.it.password", "");
+        }
         firstMigration = flyway().migrate();
+    }
+
+    @AfterAll
+    static void stopContainer() {
+        if (container != null) {
+            container.stop();
+        }
     }
 
     @Test
@@ -194,13 +225,13 @@ class FlywayMigrationIT {
 
     private static Flyway flyway() {
         return Flyway.configure()
-                .dataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword())
+                .dataSource(jdbcUrl, username, password)
                 .locations(MIGRATION_LOCATION)
                 .load();
     }
 
     private static Connection openConnection() throws SQLException {
-        return DriverManager.getConnection(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
+        return DriverManager.getConnection(jdbcUrl, username, password);
     }
 
     private static long count(Connection connection, String sql) throws SQLException {
