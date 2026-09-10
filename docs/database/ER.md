@@ -1,11 +1,13 @@
 # 数据库 ER 文档
 
-本文件是 `backend/src/main/resources/db/migration/` 中 V1～V5 迁移的实体关系说明，属于 DB-01 交付物。
+本文件是 `backend/src/main/resources/db/migration/` 中 V1～V6 迁移的实体关系说明。V1～V5 属于 DB-01 交付物，V6 属于 DB-02 交付物。
 图中的表名、字段名、主外键关系与迁移 SQL 完全一致，不使用计划外或含义模糊的“扩展表”。
 
-- 数据库产品：MySQL 8（InnoDB，`utf8mb4`，`utf8mb4_0900_ai_ci`）
+- 数据库产品：MySQL 8（InnoDB，`utf8mb4`）
+- 表默认排序规则：`utf8mb4_0900_ai_ci`（大小写不敏感），V6 另有 6 个不透明标识符列的例外，见 §3.8
 - 业务表数量：15
-- 迁移文件：V1～V5，由 Flyway 从空库顺序执行
+- 迁移文件：V1～V6，由 Flyway 从空库顺序执行；V6 只调整 6 个列的排序规则，不改结构、不改数据
+- 最低数据库版本：MySQL 8.0.17（V6 使用的 `utf8mb4_0900_bin` 自该版本起提供）
 - 图中 `BIGINT_UNSIGNED` 表示 `BIGINT UNSIGNED`，`INT_UNSIGNED` 表示 `INT UNSIGNED`，`TINYINT_UNSIGNED` 表示 `TINYINT UNSIGNED`
 
 ## 1. ER 图
@@ -285,6 +287,26 @@ erDiagram
 5. **非空与默认值**：`created_at`/`updated_at` 一律 `NOT NULL` 且无数据库默认值与自动更新；`status`、`version`、计数字段等默认值由 DDL 固定。
 6. **类型与精度**：金额为 `DECIMAL(10,2)`，评分汇总为 `DECIMAL(3,2)`，计数为 `INT UNSIGNED`，并发版本为 `BIGINT NOT NULL DEFAULT 0`。
 7. **外键列索引**：每个外键列都有可用索引（组合索引的最左前缀或独立索引），保证外键校验和相关查询不使用全表扫描。
+8. **排序规则（collation）**：15 张表的默认排序规则是 `utf8mb4_0900_ai_ci`（大小写不敏感），**唯独下列 6 个不透明标识符列由 V6 改为 `utf8mb4_0900_bin`（逐码点、区分大小写）**：
+
+   | 列 | 类型 | 依赖该排序规则的唯一键 |
+   | --- | --- | --- |
+   | `users.openid` | `VARCHAR(64) NOT NULL` | `uk_users_openid(openid)` |
+   | `users.unionid` | `VARCHAR(64) NULL` | 无（当前不建唯一约束） |
+   | `refresh_tokens.device_id` | `VARCHAR(64) NOT NULL` | 无 |
+   | `file_objects.object_key` | `VARCHAR(255) NOT NULL` | `uk_file_objects_object_key(object_key)` |
+   | `orders.order_no` | `VARCHAR(64) NOT NULL` | `uk_orders_order_no(order_no)` |
+   | `orders.client_request_id` | `VARCHAR(64) NOT NULL` | `uk_orders_buyer_request(buyer_id, client_request_id)` |
+
+   **为什么只有这 6 列**：这几个值都是**不透明标识符**——微信 `openid`/`unionid`、设备标识、对象存储 key、订单号、客户端幂等键。它们的每一个字符都由外部系统生成，大小写不同就是不同的值；若按 `ai_ci` 比较，`oAbC` 与 `OaBc` 会被判为同一个 openid、同一个订单号或同一个幂等键，导致合法用户被判重复、或幂等校验错误命中。
+
+   **为什么不是整表转换**：`nickname`、`title`、`description`、`original_name`、`reject_reason` 等是**展示与搜索文本**，大小写、重音不敏感正是它们需要的语义；把这 6 列的修正扩大到整表会改变搜索与排序行为，属于本迁移明确不做的事。同理，`users.openid` 与 `users.unionid` 只是两个列例外，不改变 `users` 表的默认排序规则。
+
+   **每个 `MODIFY COLUMN` 都原样保留**字符集、长度与 `NOT NULL`/`NULL`，未改默认值；列位置不变，其上及包含它的既有索引随列排序规则一并生效，不会被删除或改名。自 `ai_ci` 收紧到 `bin` 是**放宽**唯一性判定（更少的折叠），因此不可能凭空产生重复键冲突。
+
+   **`utf8mb4_0900_*` 全部是 NO PAD**，即 `'abc'` 与 `'abc '` 视为不同值；V6 前后这一语义不变，尾部空格既不被裁剪也不被忽略。
+
+   **缺陷来源与边界**：这 6 列的问题源于早期建表规划采用"整表统一排序规则"的做法，V1～V4 建表时未对这 6 列写列级 `COLLATE`，使它们继承表默认的 `ai_ci`。V1～V5 已执行且永久只读，**因此按总纲 v2.6 §5.4 用新增迁移 V6 修正，不回写旧迁移**；这条约束不因 §3.8 描述的历史缺陷而放宽。已执行迁移的校验和（SHA-256 / `flyway_schema_history.checksum`）必须保持不变，由 `FlywayMigrationIT` 与 `IdentifierCollationIT` 在真实 MySQL 上断言。
 
 ## 4. 必须由应用事务保证的规则
 
@@ -311,7 +333,7 @@ MySQL 没有部分唯一索引，因此以下规则无法用普通索引表达�
 - **删除策略**：不使用通用 `deleted` 列，也不做物理级联删除。商品删除是状态变更（`items.status = 'DELETED'`），文件解绑是 `file_objects.status` 变更，认证与评价通过业务状态管理；所有外键 `ON DELETE RESTRICT` 保护历史数据。
 - **不启用的能力**：无触发器、存储过程、事件、视图、分区表、数据库用户；未启用 `FULLTEXT(title, description)`。
 
-## 6. V1～V5 依赖顺序
+## 6. V1～V6 依赖顺序
 
 | 版本 | 文件 | 创建/写入内容 | 依赖 |
 | --- | --- | --- | --- |
@@ -320,8 +342,9 @@ MySQL 没有部分唯一索引，因此以下规则无法用普通索引表达�
 | V3 | `V3__create_trade_tables.sql` | 依次创建 `favorites` → `orders` → `order_snapshots` → `order_events` | 依赖 V1 的 `users`、V2 的 `items` |
 | V4 | `V4__create_review_message_tables.sql` | 依次创建 `reviews` → `notifications` → `audit_logs` | 依赖 V1 的 `users`、V3 的 `orders` |
 | V5 | `V5__seed_base_data.sql` | 只写入 1 个校区与 12 条两级分类种子 | 依赖 V1 的 `campuses`、V2 的 `categories` |
+| V6 | `V6__use_exact_identifier_collations.sql` | 只把 §3.8 的 6 个不透明标识符列改为 `utf8mb4_0900_bin`；不建表、不改数据 | 依赖 V1 的 `users`/`refresh_tokens`、V2 的 `file_objects`、V3 的 `orders` |
 
-V1～V4 只创建结构，V5 只写种子数据；迁移不依赖本机绝对路径、环境变量或外部文件。第二个 `orders` 相关表（`order_snapshots`、`order_events`）以及 `item_images` 依赖前序表先建，因此文件内建表顺序不可调整。
+V1～V4 只创建结构，V5 只写种子数据，V6 只改排序规则；迁移不依赖本机绝对路径、环境变量或外部文件。第二个 `orders` 相关表（`order_snapshots`、`order_events`）以及 `item_images` 依赖前序表先建，因此文件内建表顺序不可调整。V6 之前的列排序规则由 V1～V4 的表默认值决定，V6 之后这 6 列不再继承表默认值。
 
 ## 7. 数据边界声明
 
