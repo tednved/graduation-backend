@@ -38,7 +38,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * <p>数据源有两种来源，按以下优先级解析：
  * <ol>
  *   <li>未提供 {@code db.it.url} 时，使用项目已有 Testcontainers 依赖启动 {@code mysql:8.0} 容器
- *       （需要 Docker）。容器每次全新启动，schema 由构造保证为空。</li>
+ *       （需要 Docker）。容器每次全新启动，schema 由构造保证为空。两个容器专属回归用例在容器内
+ *       另建带随机后缀的临时 schema：建库与授权走容器管理员账号，业务账号只获得该 schema 的权限，
+ *       从而复现外部模式下的真实权限边界，而不是依赖业务账号的隐式全局权限。</li>
  *   <li>提供 {@code db.it.url} 时，连接该外部真实 MySQL 8 实例。此路径必须先通过
  *       {@link #assertTargetIsDisposable} 的前置保护，否则不得执行任何迁移。</li>
  * </ol>
@@ -89,6 +91,19 @@ class FlywayMigrationIT {
             "favorites", "orders", "order_snapshots", "order_events",
             "reviews", "notifications", "audit_logs");
 
+    /** 容器默认 schema，由镜像入口脚本创建并把该 schema 的全部权限授予 {@link #CONTAINER_USERNAME}。 */
+    private static final String CONTAINER_DATABASE = "db01_it";
+    private static final String CONTAINER_USERNAME = "db01_it_user";
+    private static final String CONTAINER_PASSWORD = "db01_it_password";
+
+    /**
+     * 临时 schema 的管理员账号。{@code MySQLContainer} 的 {@code configure()} 在 {@code start()}
+     * 时才执行，并把 {@code MYSQL_ROOT_PASSWORD} 覆盖为 {@code withPassword} 的取值，因此 root 口令
+     * 恒等于 {@code container.getPassword()}，既不写死也不能通过 {@code withEnv} 另行指定。
+     * root 只用于容器内的临时 schema 建库与授权，不参与任何业务迁移。
+     */
+    private static final String CONTAINER_ADMIN_USERNAME = "root";
+
     private static MySQLContainer container;
     private static String jdbcUrl;
     private static String username;
@@ -100,7 +115,12 @@ class FlywayMigrationIT {
     static void migrateEmptyDatabase() {
         String externalUrl = System.getProperty(URL_PROPERTY);
         if (externalUrl == null || externalUrl.isBlank()) {
-            container = new MySQLContainer("mysql:8.0");
+            container = new MySQLContainer("mysql:8.0")
+                    .withDatabaseName(CONTAINER_DATABASE)
+                    .withUsername(CONTAINER_USERNAME)
+                    .withPassword(CONTAINER_PASSWORD)
+                    .withUrlParam("allowPublicKeyRetrieval", "true")
+                    .withUrlParam("useSSL", "false");
             container.start();
             jdbcUrl = container.getJdbcUrl();
             username = container.getUsername();
@@ -377,20 +397,30 @@ class FlywayMigrationIT {
         return values;
     }
 
-    /** 在容器内建立一个独立的空 schema，仅用于回归用例；外部模式不会调用本方法。 */
+    /**
+     * 在容器内建立一个独立的空 schema，仅用于回归用例；外部模式不会调用本方法。
+     *
+     * <p>建库必须使用容器管理员账号：镜像只为业务账号授予默认 schema 的权限，业务账号执行
+     * {@code CREATE DATABASE} 会被拒绝。建库后把新 schema 的权限授予业务账号，使后续
+     * {@link #containerConnection} 与 {@link #assertTargetIsDisposable} 都以业务账号的受限身份访问，
+     * 与外部模式下的实际权限情形保持一致。
+     */
     private static String createDisposableSchema(String prefix) throws SQLException {
         String schema = prefix + "_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         try (Connection connection = DriverManager.getConnection(
-                container.getJdbcUrl(), container.getUsername(), container.getPassword());
+                container.getJdbcUrl(), CONTAINER_ADMIN_USERNAME, container.getPassword());
              Statement statement = connection.createStatement()) {
             statement.execute("CREATE DATABASE `" + schema + "` "
                     + "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+            statement.execute("GRANT ALL PRIVILEGES ON `" + schema + "`.* TO '"
+                    + CONTAINER_USERNAME + "'@'%'");
         }
         return schema;
     }
 
     private static String containerUrl(String schema) {
-        return "jdbc:mysql://" + container.getHost() + ":" + container.getMappedPort(3306) + "/" + schema;
+        return "jdbc:mysql://" + container.getHost() + ":" + container.getMappedPort(3306) + "/" + schema
+                + "?allowPublicKeyRetrieval=true&useSSL=false";
     }
 
     private static Connection containerConnection(String schema) throws SQLException {
