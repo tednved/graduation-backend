@@ -16,7 +16,7 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | BE-01 | `main` | 项目负责人 | DONE | 2026-09-06 | 历史初始化，无 PR | 无 | Spring Boot 4.1.1 / Java 21 | 2026-09-06 |
 | BE-02 | `main` | 项目负责人 / Codex | DONE | 2026-09-06 | 历史初始化，无 PR | 无 | Maven 依赖基线 | 2026-09-06 |
-| PM-03 | `docs/PM-03-collaboration-visibility` | Codex | IN_PROGRESS | 2026-09-06 | 待创建 | `docs/handoffs/PM-03.md` | 无契约变化 | 2026-09-06 |
+| PM-03 | `docs/PM-03-collaboration-visibility` | Codex | REVIEW | 2026-09-06 | [#2](https://github.com/tednved/graduation-backend/pull/2) | `docs/handoffs/PM-03.md` | 无契约变化 | 2026-09-10 |
 
 ## 合并后更新要求
 
