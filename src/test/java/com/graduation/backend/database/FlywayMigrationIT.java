@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * DB-01 迁移集成测试。
  *
  * <p>必须连接真实 MySQL 8 实例，不使用 H2 / SQLite / mock 替代。目标 schema 为空，
- * Flyway 从 {@code classpath:db/migration} 执行 V1～V5。
+ * Flyway 从 {@code classpath:db/migration} 执行 V1～V6。
  *
  * <p>数据源有两种来源，按以下优先级解析：
  * <ol>
@@ -109,6 +109,13 @@ class FlywayMigrationIT {
     private static String username;
     private static String password;
 
+    /** 建库用连接：容器模式为管理员 URL，外部模式即锚点 URL（业务账号自己建临时 schema）。 */
+    private static String adminUrl;
+
+    /** 由锚点 URL 拆出的实例前缀（形如 {@code jdbc:mysql://host:port/}）与 URL 参数。 */
+    private static String instancePrefix;
+    private static String instanceParameters;
+
     private static MigrateResult firstMigration;
 
     @BeforeAll
@@ -125,13 +132,29 @@ class FlywayMigrationIT {
             jdbcUrl = container.getJdbcUrl();
             username = container.getUsername();
             password = container.getPassword();
+            adminUrl = container.getJdbcUrl();
         } else {
             jdbcUrl = externalUrl;
             username = requiredSetting(USERNAME_PROPERTY, USERNAME_ENV);
             password = optionalSetting(PASSWORD_PROPERTY, PASSWORD_ENV);
+            adminUrl = externalUrl;
             assertTargetIsDisposable(externalUrl, username, password, System.getProperty(CONFIRM_PROPERTY));
         }
+        splitUrl(jdbcUrl);
         firstMigration = flyway().migrate();
+    }
+
+    /** MySQL 的 JDBC URL 中 schema 恒为最后一段路径，去掉查询串后截到最后一个 {@code /} 即可。 */
+    private static void splitUrl(String anchorUrl) {
+        String withoutQuery = anchorUrl;
+        int query = anchorUrl.indexOf('?');
+        if (query >= 0) {
+            instanceParameters = anchorUrl.substring(query + 1);
+            withoutQuery = anchorUrl.substring(0, query);
+        } else {
+            instanceParameters = "";
+        }
+        instancePrefix = withoutQuery.substring(0, withoutQuery.lastIndexOf('/') + 1);
     }
 
     @AfterAll
@@ -142,10 +165,10 @@ class FlywayMigrationIT {
     }
 
     @Test
-    @DisplayName("空数据库执行 classpath:db/migration 返回 5 个成功迁移")
-    void executesFiveMigrationsOnEmptyDatabase() {
+    @DisplayName("空数据库执行 classpath:db/migration 返回 6 个成功迁移")
+    void executesSixMigrationsOnEmptyDatabase() {
         assertTrue(firstMigration.success, "Flyway 迁移未成功");
-        assertEquals(5, firstMigration.migrationsExecuted, "应执行 V1～V5 共 5 个迁移");
+        assertEquals(6, firstMigration.migrationsExecuted, "应执行 V1～V6 共 6 个迁移");
     }
 
     @Test
@@ -169,8 +192,8 @@ class FlywayMigrationIT {
     }
 
     @Test
-    @DisplayName("flyway_schema_history 记录 V1～V5 且全部成功、顺序正确")
-    void recordsVersionsOneToFiveInOrder() throws SQLException {
+    @DisplayName("flyway_schema_history 记录 V1～V6 且全部成功、顺序正确")
+    void recordsVersionsOneToSixInOrder() throws SQLException {
         List<String> appliedVersions = new ArrayList<>();
         try (Connection connection = openConnection();
              PreparedStatement statement = connection.prepareStatement(
@@ -183,7 +206,41 @@ class FlywayMigrationIT {
                 appliedVersions.add(version);
             }
         }
-        assertEquals(List.of("1", "2", "3", "4", "5"), appliedVersions, "迁移版本与顺序不正确");
+        assertEquals(List.of("1", "2", "3", "4", "5", "6"), appliedVersions, "迁移版本与顺序不正确");
+    }
+
+    @Test
+    @DisplayName("DB-01 基线: target V5 隔离下 V1～V5 仍为 5 个迁移、15 张表与既定种子，且尚未改排序规则")
+    void v1ToV5BaselineStillHoldsUnderTargetFive() throws SQLException {
+        String schema = createDisposableSchema("db02_it_v5baseline");
+        Flyway toV5 = Flyway.configure()
+                .dataSource(schemaUrl(schema), username, password)
+                .locations(MIGRATION_LOCATION)
+                .target("5")
+                .load();
+
+        MigrateResult baseline = toV5.migrate();
+        assertTrue(baseline.success, "target V5 迁移未成功");
+        assertEquals(5, baseline.migrationsExecuted, "target V5 应只执行 V1～V5");
+
+        try (Connection connection = connectionFor(schema)) {
+            Set<String> actualTables = new LinkedHashSet<>(baseTables(connection));
+            assertTrue(actualTables.remove(FLYWAY_HISTORY_TABLE), "缺少 " + FLYWAY_HISTORY_TABLE);
+            assertEquals(15, actualTables.size(), "V5 业务表数量应为 15，实际为 " + actualTables);
+            assertEquals(BUSINESS_TABLES, actualTables, "V5 业务表集合与 DB-01 规格不一致");
+            assertEquals(1, count(connection,
+                    "SELECT COUNT(*) FROM campuses WHERE code = 'MAIN' AND name = '默认校区'"),
+                    "V5 种子校区缺失");
+            assertEquals(5, count(connection, "SELECT COUNT(*) FROM categories WHERE parent_id IS NULL"),
+                    "一级分类种子数量错误");
+            assertEquals(7, count(connection, "SELECT COUNT(*) FROM categories WHERE parent_id IS NOT NULL"),
+                    "二级分类种子数量错误");
+            assertEquals("utf8mb4_0900_ai_ci", scalar(connection,
+                            "SELECT collation_name FROM information_schema.columns "
+                                    + "WHERE table_schema = DATABASE() AND table_name = 'users' "
+                                    + "AND column_name = 'openid'"),
+                    "V5 隔离态下 openid 仍继承表默认排序规则——DB-01 基线在 V6 之前未被改动");
+        }
     }
 
     @Test
@@ -300,7 +357,7 @@ class FlywayMigrationIT {
         assumeTrue(container != null, "仅容器模式执行：外部模式的目标空 schema 由调用方提供，不在此断言");
         String schema = createDisposableSchema("it_empty");
         assertDoesNotThrow(() -> assertTargetIsDisposable(
-                containerUrl(schema), container.getUsername(), container.getPassword(), EXTERNAL_CONFIRMATION));
+                schemaUrl(schema), container.getUsername(), container.getPassword(), EXTERNAL_CONFIRMATION));
     }
 
     @Test
@@ -308,7 +365,7 @@ class FlywayMigrationIT {
     void rejectsSchemaWithSentinelTableAndLeavesItUnchanged() throws SQLException {
         assumeTrue(container != null, "仅容器模式执行：哨兵库只建在容器内，不触碰本机业务库");
         String schema = createDisposableSchema("it_sentinel");
-        try (Connection connection = containerConnection(schema);
+        try (Connection connection = connectionFor(schema);
              Statement statement = connection.createStatement()) {
             statement.execute("CREATE TABLE `sentinel_marker` (`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, "
                     + "PRIMARY KEY (`id`)) ENGINE = InnoDB");
@@ -316,11 +373,11 @@ class FlywayMigrationIT {
 
         IllegalStateException failure = assertThrows(IllegalStateException.class,
                 () -> assertTargetIsDisposable(
-                        containerUrl(schema), container.getUsername(), container.getPassword(), EXTERNAL_CONFIRMATION));
+                        schemaUrl(schema), container.getUsername(), container.getPassword(), EXTERNAL_CONFIRMATION));
         assertTrue(failure.getMessage().contains("sentinel_marker"),
                 "拒绝原因应列出已存在的对象，实际: " + failure.getMessage());
 
-        try (Connection connection = containerConnection(schema)) {
+        try (Connection connection = connectionFor(schema)) {
             assertEquals(List.of("sentinel_marker"), baseTables(connection),
                     "哨兵表必须原样保留，且不得被迁移创建任何业务表");
             assertEquals(0, count(connection, "SELECT COUNT(*) FROM information_schema.tables "
@@ -398,33 +455,35 @@ class FlywayMigrationIT {
     }
 
     /**
-     * 在容器内建立一个独立的空 schema，仅用于回归用例；外部模式不会调用本方法。
+     * 在目标实例上建立一个独立的空 schema，仅用于回归用例。
      *
-     * <p>建库必须使用容器管理员账号：镜像只为业务账号授予默认 schema 的权限，业务账号执行
+     * <p>容器模式必须使用容器管理员账号：镜像只为业务账号授予默认 schema 的权限，业务账号执行
      * {@code CREATE DATABASE} 会被拒绝。建库后把新 schema 的权限授予业务账号，使后续
-     * {@link #containerConnection} 与 {@link #assertTargetIsDisposable} 都以业务账号的受限身份访问，
-     * 与外部模式下的实际权限情形保持一致。
+     * {@link #connectionFor} 与 {@link #assertTargetIsDisposable} 都以业务账号的受限身份访问，
+     * 与外部模式下的实际权限情形保持一致。外部模式由调用方账号自己建库，与锚点 schema 无关。
      */
     private static String createDisposableSchema(String prefix) throws SQLException {
         String schema = prefix + "_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
-        try (Connection connection = DriverManager.getConnection(
-                container.getJdbcUrl(), CONTAINER_ADMIN_USERNAME, container.getPassword());
+        String adminUser = container == null ? username : CONTAINER_ADMIN_USERNAME;
+        String adminSecret = container == null ? password : container.getPassword();
+        try (Connection connection = DriverManager.getConnection(adminUrl, adminUser, adminSecret);
              Statement statement = connection.createStatement()) {
             statement.execute("CREATE DATABASE `" + schema + "` "
                     + "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
-            statement.execute("GRANT ALL PRIVILEGES ON `" + schema + "`.* TO '"
-                    + CONTAINER_USERNAME + "'@'%'");
+            if (container != null) {
+                statement.execute("GRANT ALL PRIVILEGES ON `" + schema + "`.* TO '"
+                        + CONTAINER_USERNAME + "'@'%'");
+            }
         }
         return schema;
     }
 
-    private static String containerUrl(String schema) {
-        return "jdbc:mysql://" + container.getHost() + ":" + container.getMappedPort(3306) + "/" + schema
-                + "?allowPublicKeyRetrieval=true&useSSL=false";
+    private static String schemaUrl(String schema) {
+        return instancePrefix + schema + (instanceParameters.isEmpty() ? "" : "?" + instanceParameters);
     }
 
-    private static Connection containerConnection(String schema) throws SQLException {
-        return DriverManager.getConnection(containerUrl(schema), container.getUsername(), container.getPassword());
+    private static Connection connectionFor(String schema) throws SQLException {
+        return DriverManager.getConnection(schemaUrl(schema), username, password);
     }
 
     private static String requiredSetting(String property, String environmentVariable) {
@@ -461,6 +520,12 @@ class FlywayMigrationIT {
             assertTrue(resultSet.next(), "计数查询未返回结果: " + sql);
             return resultSet.getLong(1);
         }
+    }
+
+    private static String scalar(Connection connection, String sql) throws SQLException {
+        List<String> values = query(connection, sql);
+        assertEquals(1, values.size(), "期望恰好一行: " + sql);
+        return values.get(0);
     }
 
     /**
