@@ -198,9 +198,9 @@ paths:
       x-owner-task: BE-04
       summary: 修改当前用户资料
       description: |
-        局部更新：请求体中**省略**的字段保持原值；`phone`/`campusId`/`avatarFileId` 显式 `null` 表示清除；
+        局部更新：请求体中**省略**的字段保持原值；`phone`/`avatarFileId` 显式 `null` 表示清除；
         `nickname` 显式 `null` 非法（返回 `VALIDATION_ERROR`）。昵称首尾空格由服务端清理后保存。
-        提交的 `campusId` 必须存在且为 `ENABLED`；`avatarFileId` 必须是当前用户所有、`bizType=AVATAR`、状态 `UPLOADED` 的文件。
+        系统固定使用 `MAIN` 默认校区，不接受校区字段；`avatarFileId` 必须是当前用户所有、`bizType=AVATAR`、状态 `UPLOADED` 的文件。
         请求中出现 `role`、`status`、`openid`、评分字段一律非法。
       security: [{bearerAuth: []}]
       parameters:
@@ -277,7 +277,7 @@ paths:
       summary: 提交校园认证申请
       description: |
         要求当前用户 `ACTIVE`；已存在 `PENDING` 申请时返回 `CERTIFICATION_PENDING_EXISTS`（并发下由 `SELECT ... FOR UPDATE` 保证）。
-        `campusId` 必须存在且 `ENABLED`；`evidenceFileId` 必须是当前用户所有、`bizType=CERTIFICATION_EVIDENCE`、状态 `UPLOADED` 的文件。
+        系统固定使用 `MAIN` 默认校区；MVP 仅接受 `MANUAL` 认证，不接收证据文件。
         `realName`、`studentNo` 的脱敏展示值由服务端生成，请求中不得出现脱敏字段。
       security: [{bearerAuth: []}]
       parameters:
@@ -362,7 +362,6 @@ paths:
           description: 按认证状态筛选，省略表示全部
           schema:
             $ref: '#/components/schemas/CertificationStatus'
-        - $ref: '#/components/parameters/CampusIdQuery'
       responses:
         '200':
           description: 申请分页
@@ -664,7 +663,7 @@ paths:
       description: |
         `multipart/form-data`，文件字段名固定为 `file`。按 `FilePolicy` 校验 MIME、扩展名、文件头与大小，
         计算 SHA-256，生成不可猜测的 objectKey 并写入对象存储，保存 `UPLOADED` 元数据。
-        对象写入成功但数据库失败时立即补偿删除对象。返回 `fileId` 与可访问 URL；不返回内部 objectKey。
+        对象写入成功但数据库失败时立即补偿删除对象。商品图片和头像返回公开稳定 URL；当前 MVP 不开放认证证据上传。返回 `fileId` 与可访问 URL，不返回内部 objectKey。
         商品图片只接受本接口返回的 `fileId`，禁止前端提交最终 URL。
       security: [{bearerAuth: []}]
       parameters:
@@ -672,9 +671,10 @@ paths:
         - name: bizType
           in: query
           required: true
-          description: 文件业务类型，决定允许的 MIME、扩展名与大小上限
+          description: 文件业务类型。ITEM_IMAGE 最大 5 MB，AVATAR 最大 2 MB；仅 JPEG/PNG/WebP。当前 MVP 不接受 CERTIFICATION_EVIDENCE
           schema:
-            $ref: '#/components/schemas/FileBizType'
+            type: string
+            enum: [ITEM_IMAGE, AVATAR]
       requestBody:
         required: true
         content:
@@ -722,7 +722,7 @@ paths:
       summary: 创建商品草稿
       description: |
         要求当前用户 `ACTIVE` 且认证 `APPROVED`，否则 `USER_CERTIFICATION_REQUIRED`。
-        校验分类为启用的二级分类、校区启用、1～9 个 `imageFileIds` 全部属于当前用户且 `bizType=ITEM_IMAGE`、状态 `UPLOADED`。
+        校验分类为启用的二级分类、1～9 个 `imageFileIds` 全部属于当前用户且 `bizType=ITEM_IMAGE`、状态 `UPLOADED`；系统自动绑定 `MAIN` 默认校区。
         创建 `DRAFT` 商品与有序图片，并把文件标记 `BOUND`。
       security: [{bearerAuth: []}]
       parameters:
@@ -776,7 +776,6 @@ paths:
             minLength: 1
             maxLength: 50
         - $ref: '#/components/parameters/CategoryIdQuery'
-        - $ref: '#/components/parameters/CampusIdQuery'
         - name: condition
           in: query
           required: false
@@ -2261,14 +2260,6 @@ components:
       schema:
         $ref: '#/components/schemas/DecimalId'
 
-    CampusIdQuery:
-      name: campusId
-      in: query
-      required: false
-      description: 校区 ID
-      schema:
-        $ref: '#/components/schemas/DecimalId'
-
   # ===========================================================================
   # 复用响应。x-error-codes 是该 HTTP 状态允许出现的全部错误码，供校验脚本核对 §7.2。
   # ===========================================================================
@@ -2584,7 +2575,7 @@ components:
     ItemSort:
       type: string
       enum: [NEWEST, PRICE_ASC, PRICE_DESC, POPULAR]
-      description: 商品搜索的固定排序白名单，不接受任意列名
+      description: 商品搜索固定白名单；POPULAR = favorite_count DESC, view_count DESC, published_at DESC, id DESC
 
     # -------------------------------------------------------------------------
     # 认证
@@ -2629,7 +2620,7 @@ components:
       type: object
       description: |
         字段名在此冻结。Access Token 有效期 15 分钟（§8.1）。
-        Refresh Token 有效期见 `docs/api/contract-decisions.md`，未在总纲冻结前不得由实现方擅自固定。
+        Refresh Token 有效期固定 30 天；每次成功刷新都轮换令牌并重新计算 30 天。
       required: [accessToken, refreshToken, tokenType, expiresIn, refreshExpiresIn, user]
       properties:
         accessToken:
@@ -2649,7 +2640,9 @@ components:
         refreshExpiresIn:
           type: integer
           minimum: 1
-          description: Refresh Token 剩余有效秒数
+          const: 2592000
+          example: 2592000
+          description: Refresh Token 剩余有效秒数，固定 30 天
         user:
           $ref: '#/components/schemas/UserSummary'
         certificationStatus:
@@ -2744,7 +2737,7 @@ components:
       description: |
         仅接受下列字段。出现 role、status、openid 或评分字段即视为非法请求。
         字段省略表示保留原值；`phone` 显式 null 表示清除；`nickname` 显式 null 非法；
-        `campusId` 与 `avatarUrl` 的空值策略见 `docs/api/contract-decisions.md`。
+        `avatarFileId` 显式 null 表示清除头像；系统不接受校区字段。
       properties:
         nickname:
           type: string
@@ -2763,11 +2756,6 @@ components:
           type: [string, 'null']
           pattern: '^1[3-9][0-9]{9}$'
           description: 中国大陆手机号；显式 null 表示清除
-        campusId:
-          anyOf:
-            - $ref: '#/components/schemas/DecimalId'
-            - type: 'null'
-          description: 校区 ID，必须存在且为 `ENABLED`
 
     UserCredit:
       type: object
@@ -2955,12 +2943,12 @@ components:
     # -------------------------------------------------------------------------
     SubmitCertificationRequest:
       type: object
-      required: [campusId, type, realName, studentNo]
+      required: [type, realName, studentNo]
       properties:
-        campusId:
-          $ref: '#/components/schemas/DecimalId'
         type:
-          $ref: '#/components/schemas/CertificationType'
+          type: string
+          const: MANUAL
+          description: 当前 MVP 仅支持人工审核
         realName:
           type: string
           minLength: 2
@@ -2971,13 +2959,6 @@ components:
           minLength: 4
           maxLength: 32
           description: 明文提交，服务端保存脱敏展示值；响应与日志不返回明文
-        evidenceFileId:
-          anyOf:
-            - $ref: '#/components/schemas/DecimalId'
-            - type: 'null'
-          description: |
-            认证证据文件 ID，必须属于当前用户且 `bizType` 为 `CERTIFICATION_EVIDENCE`。
-            各 `type` 是否强制提供见 `docs/api/contract-decisions.md` 的未决项。
 
     Certification:
       type: object
@@ -3000,11 +2981,6 @@ components:
         studentNoMasked:
           type: [string, 'null']
           description: 脱敏学号
-        evidenceFileId:
-          anyOf:
-            - $ref: '#/components/schemas/DecimalId'
-            - type: 'null'
-          description: 证据文件 ID。非管理员不返回该字段
         status:
           $ref: '#/components/schemas/CertificationStatus'
         rejectReason:
@@ -3057,7 +3033,7 @@ components:
 
     CreateItemRequest:
       type: object
-      required: [title, description, price, condition, categoryId, campusId, imageFileIds]
+      required: [title, description, price, condition, categoryId, imageFileIds]
       properties:
         title:
           type: string
@@ -3079,9 +3055,6 @@ components:
         categoryId:
           $ref: '#/components/schemas/DecimalId'
           description: 必须是启用的二级分类
-        campusId:
-          $ref: '#/components/schemas/DecimalId'
-          description: 必须是启用的校区
         imageFileIds:
           type: array
           minItems: 1
@@ -3116,8 +3089,6 @@ components:
         condition:
           $ref: '#/components/schemas/ItemCondition'
         categoryId:
-          $ref: '#/components/schemas/DecimalId'
-        campusId:
           $ref: '#/components/schemas/DecimalId'
         imageFileIds:
           type: array

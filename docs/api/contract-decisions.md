@@ -1,11 +1,10 @@
 # API 契约决策表（API-01）
 
-本文件是 `backend/openapi.yaml` 的配套说明，用于固定「表示规则」并集中登记**尚未由总纲决定**的选项。
+本文件是 `backend/openapi.yaml` 的配套说明，固定表示规则和快速 MVP 产品决定。
 
 - 契约唯一源文件：`backend/openapi.yaml`（OpenAPI 3.1）。
 - 校验入口：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-openapi.ps1`。
 - 本文件中的「已冻结」表示 API-01 依 `项目全局规划.md` §7.1.1 与 §8 直接确定，前后端实现必须一致。
-- 「未决」表示总纲未决定、且一旦决定会改变 API 或产品行为；API-01 不自行冻结，只给出可执行建议，等待项目负责人裁定。
 
 ---
 
@@ -55,7 +54,6 @@
 | --- | --- | --- |
 | `nickname` | 保留原值 | **非法**（`VALIDATION_ERROR`） |
 | `phone` | 保留原值 | 清除手机号 |
-| `campusId` | 保留原值 | 清除校区 |
 | `avatarFileId` | 保留原值 | 清除头像 |
 
 请求中出现 `role`、`status`、`openid` 或任何评分字段一律非法。昵称在服务端清理首尾空格后保存。
@@ -81,7 +79,7 @@
 | `refreshToken` | string | 新签发的刷新令牌明文，**只在本响应出现一次**，服务端只存 SHA-256 哈希 |
 | `tokenType` | string | 常量 `Bearer` |
 | `expiresIn` | integer | Access Token 剩余秒数，固定 `900` |
-| `refreshExpiresIn` | integer | Refresh Token 剩余秒数，具体 TTL 见 §3 未决项 |
+| `refreshExpiresIn` | integer | 固定 2592000 秒（30 天）；每次成功刷新轮换并重新计时 |
 | `user` | `UserSummary` | `id`、`nickname`、`avatarUrl` |
 | `certificationStatus` | §4 枚举 | 便于前端首屏直接判断能否发布 |
 
@@ -200,50 +198,19 @@
 
 ---
 
-## 3. 未决项（上交项目负责人裁定）
+## 3. 已裁定的快速 MVP 产品规则
 
-以下选项总纲未决定，且一旦确定会改变 API 或产品行为。API-01 已保证：**表示规则类未决项为 0**（§1 全部冻结）；下列为需要裁定的产品级选项，契约中已预留字段但未擅自锁定语义。
+项目负责人于 2026-09-11 一次性裁定，以下不再作为联调或合并阻塞：
 
-### 未决 1：缺少校区列表接口（影响最大）
+1. **单校区**：系统只使用 `MAIN` 默认校区。API 不提供校区列表，不接收或筛选 `campusId`；用户、认证和商品由后端自动绑定默认校区。
+2. **Refresh Token**：30 天；成功刷新时轮换并重新计算 30 天。
+3. **认证方式**：当前只开放 `MANUAL`；不接收 `evidenceFileId`。学生证、校园邮箱和证据材料留作后续扩展。
+4. **文件访问**：商品图片和头像公开可读；当前 MVP 不开放认证证据上传和访问。
+5. **上传限制**：ITEM_IMAGE 最大 5 MB，AVATAR 最大 2 MB；仅 JPEG、PNG、WebP。
+6. **POPULAR 排序**：`favorite_count DESC, view_count DESC, published_at DESC, id DESC`。
+7. **校区变更**：用户资料不支持修改校区，因此不存在认证跨校区失效问题。
 
-- **现状**：§8 没有校区查询接口，但 `PATCH /users/me` 需要 `campusId`、`POST /items` 需要 `campusId`、`GET /items` 支持 `campusId` 筛选，`GET /admin/certifications` 支持 `campusId` 筛选。前端目前**无法获取可选校区列表**，校区选择器无法渲染。
-- **建议**：新增公开接口 `GET /api/v1/campuses`，`security: []`，只返回 `ENABLED` 校区，响应 `data: { campuses: [{ id, name }] }`；按 `sort_no`/`id` 稳定排序。该接口会用到已定义的 `CampusStatus` 枚举。
-- **代价**：需要修订总纲 §8 并补充一个任务归属（建议 BE-05，与分类/认证同批，因为它同属基础数据）。
-
-### 未决 2：Refresh Token 有效期
-
-- **现状**：总纲只固定 Access Token 为 15 分钟，未给 Refresh TTL；契约中 `refreshExpiresIn` 已预留但值未定。
-- **建议**：30 天绝对有效期，刷新时轮换新令牌并从刷新时刻重新计时（滑动续期）；到期或重放即要求重新登录。
-
-### 未决 3：认证证据文件是否强制
-
-- **现状**：§8.3 只说「按类型检查 `evidenceFileId`」，未给各类型的强制规则。
-- **建议**：`STUDENT_CARD`、`CAMPUS_EMAIL` **必填**；`MANUAL` 可选。缺省要求缺失时返回 `VALIDATION_ERROR`。
-
-### 未决 4：私有认证证据文件的访问策略
-
-- **现状**：`CERTIFICATION_EVIDENCE` 含身份证件类隐私材料。契约只返回 `evidenceFileId`，不返回内部路径；但「管理员审核时如何查看证据、本人能否回看」未定义。
-- **建议**：证据文件**不签发公开直链**；仅本人与管理员可读，且由后端鉴权后代理读取或签发短时（≤5 分钟）一次性地址；`FileObject.url` 对该 `bizType` 返回该短时地址而非永久地址。
-
-### 未决 5：商品图片与头像的访问策略
-
-- **现状**：总纲只说明本地图片存储默认 `LOCAL`，未定义可读性。
-- **建议**：`ITEM_IMAGE`、`AVATAR` 为公开可读（商品与公开资料本身公开），返回稳定 URL；与未决 4 的私密策略分开实现。
-
-### 未决 6：上传大小与 MIME 上限
-
-- **现状**：§8.5 说明由 `FilePolicy` 校验 MIME、扩展名、文件头与大小，但未给具体数值；契约只固定了 `FILE_TOO_LARGE`（413）与 `FILE_INVALID_TYPE`（400）。
-- **建议**：商品图片与头像 ≤ 5 MB（`image/jpeg`、`image/png`、`image/webp`）；认证证据 ≤ 10 MB（另允许 `application/pdf`）。数值应写入 `FilePolicy` 并由 BE-05 的测试固定。
-
-### 未决 7：`POPULAR` 排序的排序键
-
-- **现状**：§8.6 只给出排序白名单，未定义 `POPULAR` 的具体排序规则。
-- **建议**：`favorite_count DESC, view_count DESC, published_at DESC, id DESC`（末位加 `id` 保证稳定分页，避免翻页抖动）。
-
-### 未决 8：资料校区变更与已通过认证的关系
-
-- **现状**：§8.2 要求 `PATCH /users/me` 校验校区存在且启用，但未说明已认证用户改校区是否影响认证状态。
-- **建议**：允许自由变更资料校区，**不影响**已通过的认证状态；认证记录保留提交时的校区快照。
+这些规则已经同步到 `openapi.yaml` 和总纲 v2.7。
 
 ---
 
@@ -252,4 +219,4 @@
 1. 契约的路径、字段、枚举、状态码或错误码发生变化，先改 `项目全局规划.md`，再改 `openapi.yaml`，然后通知前后端（§「契约变化」）。
 2. 任何改动后必须重跑 `scripts/validate-openapi.ps1`，并以非零退出码为失败。
 3. 枚举变化顺序：总纲 → 数据库 → Java → OpenAPI → 前端 constants → 测试。
-4. 未决项被裁定后，从 §3 移入 §1 并同步修订 `openapi.yaml`、总纲与前端 constants。
+4. 产品决定变化时同步修订总纲、`openapi.yaml` 和前端 constants。

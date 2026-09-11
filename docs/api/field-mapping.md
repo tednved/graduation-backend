@@ -1,6 +1,6 @@
 # 前后端字段对照表（API-01）
 
-- 契约唯一源文件：`backend/openapi.yaml`；表示规则与未决项见 `docs/api/contract-decisions.md`。
+- 契约唯一源文件：`backend/openapi.yaml`；表示规则与已裁定产品规则见 `docs/api/contract-decisions.md`。
 - 「前端建议用法」是给 FE-02/FE-03 起的参考，不构成新的契约；以后端契约为准。
 - 本文件不含任何真实令牌、`openid`、`session_key`、手机号或学号；示例一律为占位值。
 
@@ -53,7 +53,7 @@
 | `refreshToken` | string | 持久化，仅用于刷新与登出 | 每次刷新都会换新，必须覆盖旧值 |
 | `tokenType` | string | 固定 `Bearer` | 拼请求头用 |
 | `expiresIn` | integer | 固定 `900`；用于提前刷新计时 | 建议剩余 < 60s 时预刷新 |
-| `refreshExpiresIn` | integer | 用于判断是否需要重新登录 | TTL 见契约决策表未决 2 |
+| `refreshExpiresIn` | integer | 用于判断是否需要重新登录 | 固定 2592000 秒 |
 | `user.id` | ID 字符串 | 全局当前用户标识 | — |
 | `user.nickname` / `user.avatarUrl` | string / string? | 首屏昵称与头像 | `avatarUrl` 可能为 `null` |
 | `certificationStatus` | §4 枚举 | 决定「发布」按钮是否可点 | 无需额外请求 |
@@ -67,7 +67,6 @@
 | 请求 `logout` | `refreshToken` | string | 清会话前提交 |
 | 请求 `PATCH /users/me` | `nickname` | string 1–20 | 省略=不变；**不得传 null** |
 | | `phone` | string? | 传 `null` 表示清除；格式 `1[3-9]xxxxxxxxx` |
-| | `campusId` | ID? | 传 `null` 表示清除；须来自校区列表 |
 | | `avatarFileId` | ID? | 必须来自 `POST /files?bizType=AVATAR`；传 `null` 表示清除 |
 | 响应 `UserProfile` | `id`,`role`,`status` | ID / 枚举 | `role=ADMIN` 才显示管理入口 |
 | | `phone` | string? | 仅本人接口返回 |
@@ -76,20 +75,17 @@
 | | `reviewCount` | integer | — |
 | | `version` | integer | 并发保护，不要展示 |
 | 响应 `PublicUser` | `accountActive` | boolean | `false` 时隐藏「下单」入口 |
-| | `campusName` | string? | 只给名称，不给 `campusId` |
 
 ### 3.3 校园认证（BE-05）
 
 | 接口 | 字段 | 类型 | 前端建议用法 |
 | --- | --- | --- | --- |
-| 请求 `POST /certifications` | `campusId` | ID | 必填 |
 | | `type` | §4 枚举 | `STUDENT_CARD`/`CAMPUS_EMAIL`/`MANUAL` |
 | | `realName` | string 2–30 | 明文提交；响应只回 `realNameMasked` |
 | | `studentNo` | string 4–32 | 明文提交；响应只回 `studentNoMasked` |
-| | `evidenceFileId` | ID? | 是否必填见契约决策表未决 3 |
+
 | 响应 `CertificationLatest` | `status` | §4 枚举 | `NOT_SUBMITTED` 时 `application` 为 `null` |
 | | `application.rejectReason` | string? | `REJECTED` 时展示 |
-| 管理 `GET /admin/certifications` | `status`,`campusId`,`page`,`size` | 查询 | 审核列表筛选 |
 | 管理 `POST .../{id}/reject` | `reason` | string 2–200 | 必填 |
 
 ### 3.4 分类与文件（BE-05）
@@ -115,10 +111,8 @@
 | | `originalPrice` | 金额字符串? | ≥ `price` |
 | | `condition` | §4 枚举 | `NEW`/`LIKE_NEW`/`GOOD`/`FAIR` |
 | | `categoryId` | ID | 必须是**二级**分类 |
-| | `campusId` | ID | 必须启用 |
 | | `imageFileIds` | ID[] 1–9 | 有序，首图即封面；全部来自 `POST /files` |
 | 请求 `PUT /items/{id}` | 同上 + `version` | — | `version` 必填，来自上次读取的 `version` |
-| 查询 `GET /items` | `keyword`,`categoryId`,`campusId`,`condition`,`minPrice`,`maxPrice`,`sort`,`page`,`size` | — | `sort` ∈ `NEWEST/PRICE_ASC/PRICE_DESC/POPULAR`；`minPrice ≤ maxPrice` |
 | 响应 `ItemCard` | `id`,`title`,`price`,`originalPrice`,`condition`,`status`,`coverImageUrl`,`campus`,`category`,`favoriteCount`,`viewCount`,`publishedAt` | — | 列表卡片只用这些字段 |
 | 响应 `ItemDetail` | `images[]` | `{fileId,url,sortNo}[]` | 轮播；按 `sortNo` 排 |
 | | `seller` | `UserSummary` | 卖家摘要 |
@@ -216,7 +210,6 @@ Content-Type: application/json
   "originalPrice": "699.00",
   "condition": "LIKE_NEW",
   "categoryId": "12",
-  "campusId": "1",
   "imageFileIds": ["501", "502"]
 }
 ```
@@ -308,11 +301,8 @@ Content-Type: application/json
 
 ---
 
-## 5. 前后端独立审查记录
+## 5. 验收记录
 
-| 端 | 审查人 | 状态 | 记录位置 |
-| --- | --- | --- | --- |
-| 后端 | 待指派 | **未审查** | 本 PR 讨论 |
-| 前端 | 待指派 | **未审查** | 本 PR 讨论 |
-
-**当前状态：无前后端独立审查证据，契约保持 Draft。** API-01 只完成契约编写与自动校验，不声明「两端已确认」；转 REVIEW 需在 Draft PR 中补齐两端逐字段审查记录。
+- 项目负责人已裁定单校区与其余快速 MVP 规则。
+- 取消前后端独立人工逐字段审查门槛；以 OpenAPI 自动校验、实现阶段契约测试和实际联调为准。
+- API-01 契约校验通过后可直接转 REVIEW 并合并。
