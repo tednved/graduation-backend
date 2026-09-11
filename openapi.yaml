@@ -1,0 +1,3603 @@
+openapi: 3.1.0
+
+info:
+  title: 校园二手物品交易系统 API
+  version: 1.0.0
+  description: |
+    本文件是 MVP 全部 HTTP 接口的唯一契约（Task-ID: API-01），依据总纲 v2.6 §3/§4/§7/§8 生成。
+    实现任务与契约不一致时，先修订本文件与总纲，再改实现。
+
+    通用约定：
+    - 基础路径 `/api/v1` 由 `servers` 提供，paths 中不重复该前缀；
+    - 除 `POST /auth/wechat-login`、`POST /auth/refresh` 与标注为公开的接口外，所有操作要求 Bearer Token；
+    - 成功响应统一包裹 `ApiResponse`，失败响应统一包裹 `ApiError`，HTTP 状态与错误码的映射见总纲 §7.2；
+    - ID（含嵌套 ID 与 bizId）一律为十进制字符串；金额与平均分为两位小数字符串；时间为 UTC ISO 8601 毫秒；
+    - 返回 204 的操作没有响应体；
+    - 每个操作的 `x-owner-task` 声明实现它的任务 ID。
+
+servers:
+  - url: /api/v1
+    description: 应用基础路径
+
+tags:
+  - name: auth
+    description: 微信登录、令牌刷新与退出
+  - name: user
+    description: 当前用户资料与公开资料
+  - name: certification
+    description: 校园认证申请与审核
+  - name: category
+    description: 分类树与分类管理
+  - name: file
+    description: 文件上传
+  - name: item
+    description: 商品发布、编辑、上下架与搜索
+  - name: favorite
+    description: 商品收藏
+  - name: order
+    description: 订单状态机与买卖列表
+  - name: review
+    description: 订单评价与用户信用
+  - name: notification
+    description: 站内业务通知
+  - name: admin
+    description: 管理端用户、商品与审计查询
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ---------------------------------------------------------------------------
+  # 8.1 认证 API
+  # ---------------------------------------------------------------------------
+  /auth/wechat-login:
+    post:
+      tags: [auth]
+      operationId: wechatLogin
+      x-owner-task: BE-04
+      summary: 微信小程序登录
+      description: |
+        用微信 `code` 换取会话并换取本系统令牌。首次登录按 openid 创建默认 `USER`/`ACTIVE` 用户。
+        微信侧失败统一映射为 `AUTH_INVALID_CODE`，不返回微信原始错误与敏感信息；`session_key` 使用后立即丢弃，不落库、不返回。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WechatLoginRequest'
+      responses:
+        '200':
+          description: 登录成功，返回令牌与当前用户摘要
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      operationId: refreshToken
+      x-owner-task: BE-04
+      summary: 刷新令牌
+      description: |
+        用 Refresh Token 换取新的令牌对，并轮换（撤销旧 Token、写入 `replacedByTokenId`）。
+        校验未过期、未撤销、设备一致、用户 `ACTIVE`；任一不满足返回 `AUTH_REFRESH_INVALID`。
+        检测到已撤销 Token 被再次使用时，撤销该用户该设备的全部 Refresh Token。
+        本接口不参与前端的 401 自动刷新队列。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: 轮换成功，返回新的令牌对
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      x-owner-task: BE-04
+      summary: 退出登录
+      description: 撤销传入的 Refresh Token。Token 已撤销或不存在也返回 204，保证幂等。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+      responses:
+        '204':
+          description: 已撤销（或本就无效），无响应体
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 8.2 用户 API
+  # ---------------------------------------------------------------------------
+  /users/me:
+    get:
+      tags: [user]
+      operationId: getMyProfile
+      x-owner-task: BE-04
+      summary: 获取当前用户资料
+      description: 当前用户信息的唯一入口，不再提供 `/auth/me`。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: 当前用户资料
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserProfile'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+    patch:
+      tags: [user]
+      operationId: updateMyProfile
+      x-owner-task: BE-04
+      summary: 修改当前用户资料
+      description: |
+        局部更新：请求体中**省略**的字段保持原值；`phone`/`avatarFileId` 显式 `null` 表示清除；
+        `nickname` 显式 `null` 非法（返回 `VALIDATION_ERROR`）。昵称首尾空格由服务端清理后保存。
+        系统固定使用 `MAIN` 默认校区，不接受校区字段；`avatarFileId` 必须是当前用户所有、`bizType=AVATAR`、状态 `UPLOADED` 的文件。
+        请求中出现 `role`、`status`、`openid`、评分字段一律非法。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+      responses:
+        '200':
+          description: 更新后的资料
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserProfile'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /users/{userId}/public:
+    get:
+      tags: [user]
+      operationId: getPublicUser
+      x-owner-task: BE-04
+      summary: 获取用户公开资料
+      description: |
+        只返回脱敏字段，任何情况下都不返回 `openid`、`unionid`、手机号与认证证据信息。
+        `DISABLED` 用户的历史评价仍可查看，但 `accountActive=false`。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: 公开资料
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PublicUser'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 8.3 校园认证 API
+  # ---------------------------------------------------------------------------
+  /certifications:
+    post:
+      tags: [certification]
+      operationId: submitCertification
+      x-owner-task: BE-05
+      summary: 提交校园认证申请
+      description: |
+        要求当前用户 `ACTIVE`；已存在 `PENDING` 申请时返回 `CERTIFICATION_PENDING_EXISTS`（并发下由 `SELECT ... FOR UPDATE` 保证）。
+        系统固定使用 `MAIN` 默认校区；MVP 仅接受 `MANUAL` 认证，不接收证据文件。
+        `realName`、`studentNo` 的脱敏展示值由服务端生成，请求中不得出现脱敏字段。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitCertificationRequest'
+      responses:
+        '201':
+          description: 申请已创建
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Certification'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /certifications/me/latest:
+    get:
+      tags: [certification]
+      operationId: getMyLatestCertification
+      x-owner-task: BE-05
+      summary: 获取本人最新认证申请
+      description: |
+        从未提交过申请时返回 200，`data.status = NOT_SUBMITTED`，其余申请字段为 `null`（不使用 404）。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: 最新申请；从未申请时为 `NOT_SUBMITTED`
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CertificationLatest'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /admin/certifications:
+    get:
+      tags: [certification]
+      operationId: listCertifications
+      x-owner-task: BE-05
+      summary: 分页查询认证申请（管理员）
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: status
+          in: query
+          required: false
+          description: 按认证状态筛选，省略表示全部
+          schema:
+            $ref: '#/components/schemas/CertificationStatus'
+      responses:
+        '200':
+          description: 申请分页
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageResponse'
+                          - type: object
+                            required: [items]
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/Certification'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /admin/certifications/{id}/approve:
+    post:
+      tags: [certification]
+      operationId: approveCertification
+      x-owner-task: BE-05
+      summary: 通过认证申请（管理员）
+      description: 锁定读取 `PENDING` 申请；置 `APPROVED`，写审核人与时间，同步用户认证状态，写审计。重复审核返回 `CERTIFICATION_ALREADY_REVIEWED`。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/CertificationId'
+      responses:
+        '200':
+          description: 审核后的申请
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Certification'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /admin/certifications/{id}/reject:
+    post:
+      tags: [certification]
+      operationId: rejectCertification
+      x-owner-task: BE-05
+      summary: 驳回认证申请（管理员）
+      description: 与通过相同的前置与副作用，但必须提供 2～200 字原因，用户认证状态同步为 `REJECTED`。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/CertificationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RejectCertificationRequest'
+      responses:
+        '200':
+          description: 审核后的申请
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Certification'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 8.4 分类 API
+  # ---------------------------------------------------------------------------
+  /categories/tree:
+    get:
+      tags: [category]
+      operationId: getCategoryTree
+      x-owner-task: BE-05
+      summary: 获取启用的两级分类树
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: 两级分类树，只含 `ENABLED` 节点
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CategoryTree'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /admin/categories:
+    post:
+      tags: [category]
+      operationId: createCategory
+      x-owner-task: BE-05
+      summary: 创建分类（管理员）
+      description: 同级名称唯一；`parentId` 非空时父分类必须是一级且 `ENABLED`。写审计。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCategoryRequest'
+      responses:
+        '201':
+          description: 已创建的分类
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Category'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /admin/categories/{id}:
+    patch:
+      tags: [category]
+      operationId: updateCategory
+      x-owner-task: BE-05
+      summary: 修改分类（管理员）
+      description: 省略字段保持原值；不允许通过本接口改变父子层级。同级名称仍需唯一。写审计。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/CategoryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCategoryRequest'
+      responses:
+        '200':
+          description: 更新后的分类
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Category'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /admin/categories/{id}/enable:
+    post:
+      tags: [category]
+      operationId: enableCategory
+      x-owner-task: BE-05
+      summary: 启用分类（管理员）
+      description: 启用自身；若为一级分类，同时启用其下已停用的子分类。写审计。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/CategoryId'
+      responses:
+        '200':
+          description: 启用后的分类
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Category'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /admin/categories/{id}/disable:
+    post:
+      tags: [category]
+      operationId: disableCategory
+      x-owner-task: BE-05
+      summary: 停用分类（管理员）
+      description: 自身或子分类存在 `ON_SALE`/`RESERVED` 商品时返回 `CATEGORY_IN_USE`。停用一级分类时，同时停用其下没有在售商品的子分类。写审计。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/CategoryId'
+      responses:
+        '200':
+          description: 停用后的分类
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Category'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 8.5 文件 API
+  # ---------------------------------------------------------------------------
+  /files:
+    post:
+      tags: [file]
+      operationId: uploadFile
+      x-owner-task: BE-05
+      summary: 上传文件
+      description: |
+        `multipart/form-data`，文件字段名固定为 `file`。按 `FilePolicy` 校验 MIME、扩展名、文件头与大小，
+        计算 SHA-256，生成不可猜测的 objectKey 并写入对象存储，保存 `UPLOADED` 元数据。
+        对象写入成功但数据库失败时立即补偿删除对象。商品图片和头像返回公开稳定 URL；当前 MVP 不开放认证证据上传。返回 `fileId` 与可访问 URL，不返回内部 objectKey。
+        商品图片只接受本接口返回的 `fileId`，禁止前端提交最终 URL。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - name: bizType
+          in: query
+          required: true
+          description: 文件业务类型。ITEM_IMAGE 最大 5 MB，AVATAR 最大 2 MB；仅 JPEG/PNG/WebP。当前 MVP 不接受 CERTIFICATION_EVIDENCE
+          schema:
+            type: string
+            enum: [ITEM_IMAGE, AVATAR]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 文件内容，字段名固定为 `file`
+      responses:
+        '201':
+          description: 上传成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FileObject'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '413':
+          $ref: '#/components/responses/Error413'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 8.6 商品 API
+  # ---------------------------------------------------------------------------
+  /items:
+    post:
+      tags: [item]
+      operationId: createItem
+      x-owner-task: BE-06
+      summary: 创建商品草稿
+      description: |
+        要求当前用户 `ACTIVE` 且认证 `APPROVED`，否则 `USER_CERTIFICATION_REQUIRED`。
+        校验分类为启用的二级分类、1～9 个 `imageFileIds` 全部属于当前用户且 `bizType=ITEM_IMAGE`、状态 `UPLOADED`；系统自动绑定 `MAIN` 默认校区。
+        创建 `DRAFT` 商品与有序图片，并把文件标记 `BOUND`。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateItemRequest'
+      responses:
+        '201':
+          description: 已创建的商品草稿
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ItemDetail'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+    get:
+      tags: [item]
+      operationId: searchItems
+      x-owner-task: BE-06
+      summary: 搜索与筛选商品
+      description: |
+        只返回 `ON_SALE` 商品。`categoryId` 传一级分类时包含其启用子分类。
+        `minPrice` 不得大于 `maxPrice`。排序只接受白名单值。列表项只返回卡片字段与首图。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - name: keyword
+          in: query
+          required: false
+          description: 标题关键词，1～50 字符
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 50
+        - $ref: '#/components/parameters/CategoryIdQuery'
+        - name: condition
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ItemCondition'
+        - name: minPrice
+          in: query
+          required: false
+          description: 最低价，两位小数字符串
+          schema:
+            $ref: '#/components/schemas/MoneyAmount'
+        - name: maxPrice
+          in: query
+          required: false
+          description: 最高价，两位小数字符串
+          schema:
+            $ref: '#/components/schemas/MoneyAmount'
+        - name: sort
+          in: query
+          required: false
+          description: 排序白名单，默认 `NEWEST`
+          schema:
+            $ref: '#/components/schemas/ItemSort'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: 商品卡片分页
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageResponse'
+                          - type: object
+                            required: [items]
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/ItemCard'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /items/{id}:
+    get:
+      tags: [item]
+      operationId: getItemDetail
+      x-owner-task: BE-06
+      summary: 获取商品详情
+      description: |
+        公开可见 `DRAFT`/`DELETED` 以外的状态；`DRAFT`/`DELETED` 仅商品本人或管理员可见，否则 `RESOURCE_NOT_FOUND`。
+        带 Token 时返回个性化字段 `favorited`、`canBuy`、`isOwner`；匿名请求时这些字段为 `null`。
+        浏览量增量失败不得导致本接口失败。
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/ItemIdPath'
+      responses:
+        '200':
+          description: 商品详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ItemDetail'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+    put:
+      tags: [item]
+      operationId: updateItem
+      x-owner-task: BE-06
+      summary: 修改商品
+      description: |
+        仅商品本人；仅 `DRAFT`/`OFF_SHELF` 可修改，被管理员锁定（`adminLock=true`）的商品不可修改，否则 `ITEM_NOT_EDITABLE`。
+        本接口为全量替换，必须携带当前 `version`；版本不匹配返回 `ITEM_NOT_EDITABLE`。
+        替换图片时校验新文件归属，被替换的文件解绑进入待清理状态。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/ItemIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateItemRequest'
+      responses:
+        '200':
+          description: 更新后的商品
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ItemDetail'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+    delete:
+      tags: [item]
+      operationId: deleteItem
+      x-owner-task: BE-06
+      summary: 删除商品
+      description: 仅商品本人；仅 `DRAFT`/`OFF_SHELF` 且不存在进行中订单。删除是状态变更（`DELETED`），不物理删除。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/ItemIdPath'
+      responses:
+        '204':
+          description: 已删除，无响应体
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /items/{id}/publish:
+    post:
+      tags: [item]
+      operationId: publishItem
+      x-owner-task: BE-06
+      summary: 上架商品
+      description: |
+        仅商品本人，从 `DRAFT` 或 `OFF_SHELF` 进入 `ON_SALE`。要求字段完整、至少一张图片、分类与校区启用、
+        用户认证仍为 `APPROVED`、商品未被管理员锁定。首次上架设置 `publishedAt`。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/ItemIdPath'
+      responses:
+        '200':
+          description: 上架后的商品
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ItemDetail'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /items/{id}/off-shelf:
+    post:
+      tags: [item]
+      operationId: takeItemOffShelf
+      x-owner-task: BE-06
+      summary: 主动下架商品
+      description: 仅商品本人，`ON_SALE` 可下架；`RESERVED`/`SOLD` 不可下架，返回 `ITEM_NOT_EDITABLE`。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/ItemIdPath'
+      responses:
+        '200':
+          description: 下架后的商品
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ItemDetail'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /users/me/items:
+    get:
+      tags: [item]
+      operationId: listMyItems
+      x-owner-task: BE-06
+      summary: 我的发布
+      description: 返回当前用户全部状态的商品，可按状态筛选。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - name: status
+          in: query
+          required: false
+          description: 省略表示全部状态
+          schema:
+            $ref: '#/components/schemas/ItemStatus'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: 我的商品分页
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageResponse'
+                          - type: object
+                            required: [items]
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/MyItemSummary'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /admin/items/{id}/off-shelf:
+    post:
+      tags: [item]
+      operationId: adminTakeItemOffShelf
+      x-owner-task: BE-10
+      summary: 强制下架并锁定商品（管理员）
+      description: 请求必须带 2～200 字原因；置 `OFF_SHELF`、`adminLock=true` 与原因，创建卖家通知，写审计。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/ItemIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminOffShelfRequest'
+      responses:
+        '200':
+          description: 强制下架后的商品
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ItemDetail'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 8.7 收藏 API
+  # ---------------------------------------------------------------------------
+  /items/{itemId}/favorite:
+    put:
+      tags: [favorite]
+      operationId: addFavorite
+      x-owner-task: BE-07
+      summary: 收藏商品
+      description: 幂等。商品必须存在且非 `DRAFT`/`DELETED`；不能收藏自己的商品（`ITEM_SELF_OPERATION`）。已收藏直接返回 204。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '204':
+          description: 已收藏（含重复调用），无响应体
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+    delete:
+      tags: [favorite]
+      operationId: removeFavorite
+      x-owner-task: BE-07
+      summary: 取消收藏
+      description: 幂等。不存在收藏关系也返回 204；实际删除后收藏计数减一且不小于 0。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '204':
+          description: 已取消（含本就未收藏），无响应体
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /items/{itemId}/favorite-status:
+    get:
+      tags: [favorite]
+      operationId: getFavoriteStatus
+      x-owner-task: BE-07
+      summary: 查询收藏状态
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '200':
+          description: 当前用户对该商品的收藏状态
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FavoriteStatus'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /users/me/favorites:
+    get:
+      tags: [favorite]
+      operationId: listMyFavorites
+      x-owner-task: BE-07
+      summary: 我的收藏
+      description: 返回收藏的商品卡片分页；已删除或下架商品的呈现方式见契约决策表。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: 收藏卡片分页
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageResponse'
+                          - type: object
+                            required: [items]
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/ItemCard'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 8.8 订单 API
+  # ---------------------------------------------------------------------------
+  /orders:
+    post:
+      tags: [order]
+      operationId: createOrder
+      x-owner-task: BE-08
+      summary: 创建订单
+      description: |
+        要求买家 `ACTIVE` 且 `APPROVED`。以「当前用户 + `clientRequestId`」为幂等键：
+        首次创建返回 **201**；同键且 `itemId`、`tradeMode` 与原订单一致的重放返回 **200**，业务数据以原订单快照为准；
+        同键但内容不一致返回 `ORDER_DUPLICATE_REQUEST`。
+        并发下商品已被锁定返回 `ITEM_CONCURRENTLY_RESERVED`；购买自己的商品返回 `ITEM_SELF_PURCHASE`；商品不可购买返回 `ITEM_NOT_AVAILABLE`。
+        MVP 只接受 `OFFLINE`。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+      responses:
+        '201':
+          description: 首次创建成功，返回新订单详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderDetail'
+        '200':
+          description: 幂等重放，返回已存在的原订单（内容与首次请求一致）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderDetail'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /orders/{id}:
+    get:
+      tags: [order]
+      operationId: getOrderDetail
+      x-owner-task: BE-08
+      summary: 获取订单详情
+      description: 仅买家、卖家或管理员可见，否则 `ORDER_OPERATION_FORBIDDEN`。使用下单时的不可变快照字段，返回事件时间线与 `allowedActions`。前端按 `allowedActions` 展示按钮，后端每次仍重新校验。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: 订单详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderDetail'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /orders/{id}/confirm:
+    post:
+      tags: [order]
+      operationId: confirmOrder
+      x-owner-task: BE-08
+      summary: 卖家接单
+      description: 仅卖家；订单须为 `PENDING_CONFIRMATION` 且商品为 `RESERVED`。转为 `CONFIRMED`，记录 `confirmedAt` 与事件，提交后通知买家。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: 更新后的订单
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderDetail'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /orders/{id}/reject:
+    post:
+      tags: [order]
+      operationId: rejectOrder
+      x-owner-task: BE-08
+      summary: 卖家拒绝订单
+      description: 仅卖家；订单须为 `PENDING_CONFIRMATION`；原因必填。转为 `REJECTED`，释放商品回 `ON_SALE`，写事件并通知买家。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderReasonRequest'
+      responses:
+        '200':
+          description: 更新后的订单
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderDetail'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /orders/{id}/cancel:
+    post:
+      tags: [order]
+      operationId: cancelOrder
+      x-owner-task: BE-08
+      summary: 取消订单
+      description: |
+        `PENDING_CONFIRMATION` 仅买家可取消；`CONFIRMED` 买家或卖家均可取消；原因必填。
+        `PENDING_RECEIPT` 不允许普通用户取消（返回 `ORDER_ILLEGAL_STATUS_TRANSITION`）。
+        转为 `CANCELLED`，释放商品回 `ON_SALE`，通知另一方。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderReasonRequest'
+      responses:
+        '200':
+          description: 更新后的订单
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderDetail'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /orders/{id}/deliver:
+    post:
+      tags: [order]
+      operationId: deliverOrder
+      x-owner-task: BE-08
+      summary: 卖家确认交付
+      description: 仅卖家；订单须为 `CONFIRMED`。转为 `PENDING_RECEIPT`，记录 `deliveredAt`，写事件并通知买家。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: 更新后的订单
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderDetail'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /orders/{id}/receive:
+    post:
+      tags: [order]
+      operationId: receiveOrder
+      x-owner-task: BE-08
+      summary: 买家确认收货
+      description: 仅买家；订单须为 `PENDING_RECEIPT`。订单转 `COMPLETED` 且商品转 `SOLD`，记录 `completedAt` 与事件，向双方创建可评价通知。订单与商品在同一事务内提交。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: 更新后的订单
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderDetail'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /users/me/orders:
+    get:
+      tags: [order]
+      operationId: listMyOrders
+      x-owner-task: BE-08
+      summary: 我的订单（买入 / 卖出）
+      description: |
+        `side` 是同一路径上的枚举：`BUY` 返回当前用户作为买家的订单，`SELL` 返回作为卖家的订单。
+        可按订单状态筛选，按下单时间倒序分页。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - name: side
+          in: query
+          required: true
+          description: 买卖视角，必填
+          schema:
+            $ref: '#/components/schemas/OrderSide'
+        - name: status
+          in: query
+          required: false
+          description: 省略表示全部状态
+          schema:
+            $ref: '#/components/schemas/OrderStatus'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: 订单分页
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageResponse'
+                          - type: object
+                            required: [items]
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/OrderSummary'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 8.9 评价 API
+  # ---------------------------------------------------------------------------
+  /reviews:
+    post:
+      tags: [review]
+      operationId: createReview
+      x-owner-task: BE-09
+      summary: 创建评价
+      description: |
+        订单必须为 `COMPLETED`，当前用户必须是买家或卖家，`reviewee` 由系统按对端计算。
+        同一订单同一评价人只能有一条评价，重复返回 `REVIEW_ALREADY_EXISTS`。
+        创建后重新聚合被评价人的平均分与评价数并写回用户，向被评价人创建 `REVIEW_RECEIVED` 通知。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReviewRequest'
+      responses:
+        '201':
+          description: 评价已创建
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Review'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /orders/{id}/review-eligibility:
+    get:
+      tags: [review]
+      operationId: getReviewEligibility
+      x-owner-task: BE-09
+      summary: 查询订单的双方评价状态
+      description: 仅订单双方可见。返回本人是否可评价、本人已有评价 ID，以及对端是否已评价。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: 评价资格与双方状态
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ReviewEligibility'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /users/{id}/reviews:
+    get:
+      tags: [review]
+      operationId: listUserReviews
+      x-owner-task: BE-09
+      summary: 获取用户收到的评价
+      description: 只返回 `VISIBLE` 评价，按创建时间倒序分页。`DISABLED` 用户的历史评价仍可查看。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/UserIdPath'
+        - name: rating
+          in: query
+          required: false
+          description: 按评分筛选，1～5
+          schema:
+            $ref: '#/components/schemas/Rating'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: 评价分页
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageResponse'
+                          - type: object
+                            required: [items]
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/Review'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /users/{id}/credit:
+    get:
+      tags: [review]
+      operationId: getUserCredit
+      x-owner-task: BE-09
+      summary: 获取用户信用摘要
+      description: |
+        公开接口，返回平均分、评价总数与 1～5 分分布。**本接口由 review 模块（BE-09）实现并拥有**，
+        user 模块不得重复实现同路径。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/UserIdPath'
+      responses:
+        '200':
+          description: 信用摘要
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserCredit'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 8.10 消息 API
+  # ---------------------------------------------------------------------------
+  /notifications:
+    get:
+      tags: [notification]
+      operationId: listNotifications
+      x-owner-task: BE-09
+      summary: 我的消息
+      description: 只返回当前用户的消息，按创建时间倒序分页。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - name: type
+          in: query
+          required: false
+          description: 按消息类型筛选，省略表示全部
+          schema:
+            $ref: '#/components/schemas/NotificationType'
+        - name: read
+          in: query
+          required: false
+          description: 按已读状态筛选，省略表示全部
+          schema:
+            type: boolean
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: 消息分页
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageResponse'
+                          - type: object
+                            required: [items]
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/Notification'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /notifications/unread-count:
+    get:
+      tags: [notification]
+      operationId: getUnreadNotificationCount
+      x-owner-task: BE-09
+      summary: 未读消息数
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: 未读数量
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        type: object
+                        required: [count]
+                        properties:
+                          count:
+                            type: integer
+                            minimum: 0
+                            description: 未读消息条数
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /notifications/{id}/read:
+    put:
+      tags: [notification]
+      operationId: markNotificationRead
+      x-owner-task: BE-09
+      summary: 标记单条消息已读
+      description: 幂等；已读再次调用仍返回 204。消息不存在或不属于本人统一返回 `RESOURCE_NOT_FOUND`。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/NotificationId'
+      responses:
+        '204':
+          description: 已读，无响应体
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /notifications/read-all:
+    put:
+      tags: [notification]
+      operationId: markAllNotificationsRead
+      x-owner-task: BE-09
+      summary: 全部标记已读
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: 本次实际更新的条数
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        type: object
+                        required: [updatedCount]
+                        properties:
+                          updatedCount:
+                            type: integer
+                            minimum: 0
+                            description: 本次由未读变为已读的条数
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  # ---------------------------------------------------------------------------
+  # 8.11 管理 API
+  # ---------------------------------------------------------------------------
+  /admin/users:
+    get:
+      tags: [admin]
+      operationId: listAdminUsers
+      x-owner-task: BE-10
+      summary: 分页查询用户（管理员）
+      description: 按关键字、账号状态、认证状态分页，不返回 `openid`。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - name: keyword
+          in: query
+          required: false
+          description: 昵称或手机号关键字，1～50 字符
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 50
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/UserStatus'
+        - name: certificationStatus
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/CertificationStatus'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: 用户分页
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageResponse'
+                          - type: object
+                            required: [items]
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/AdminUser'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /admin/users/{id}/disable:
+    post:
+      tags: [admin]
+      operationId: disableUser
+      x-owner-task: BE-10
+      summary: 禁用用户（管理员）
+      description: 禁止操作自己（`AUTH_FORBIDDEN`）；禁用用户并撤销其全部刷新令牌，写审计。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/UserIdPath'
+      responses:
+        '200':
+          description: 禁用后的用户
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AdminUser'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /admin/users/{id}/enable:
+    post:
+      tags: [admin]
+      operationId: enableUser
+      x-owner-task: BE-10
+      summary: 恢复用户（管理员）
+      description: 恢复 `ACTIVE`；不自动恢复认证状态。写审计。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/UserIdPath'
+      responses:
+        '200':
+          description: 恢复后的用户
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AdminUser'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /admin/items:
+    get:
+      tags: [admin]
+      operationId: listAdminItems
+      x-owner-task: BE-10
+      summary: 分页查询商品（管理员）
+      description: 支持多状态、多卖家与关键字筛选，不受 `ON_SALE` 限制。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - name: status
+          in: query
+          required: false
+          description: 可重复传递以筛选多个状态；省略表示全部
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/ItemStatus'
+          style: form
+          explode: true
+        - name: sellerId
+          in: query
+          required: false
+          description: 卖家用户 ID（十进制字符串）
+          schema:
+            $ref: '#/components/schemas/DecimalId'
+        - name: keyword
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 50
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: 商品分页
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageResponse'
+                          - type: object
+                            required: [items]
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/AdminItem'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /admin/audit-logs:
+    get:
+      tags: [admin]
+      operationId: listAuditLogs
+      x-owner-task: BE-10
+      summary: 分页查询审计日志（管理员，只读）
+      description: 按操作者、动作、目标与时间范围分页。审计日志只追加，本接口不提供任何写入或删除能力。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - name: operatorId
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/DecimalId'
+        - name: action
+          in: query
+          required: false
+          description: 审计动作名，1～64 字符
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+        - name: targetType
+          in: query
+          required: false
+          description: 目标类型，1～32 字符
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 32
+        - name: targetId
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/DecimalId'
+        - name: from
+          in: query
+          required: false
+          description: 起始时间（含），UTC ISO 8601 毫秒
+          schema:
+            $ref: '#/components/schemas/UtcInstant'
+        - name: to
+          in: query
+          required: false
+          description: 结束时间（含），UTC ISO 8601 毫秒
+          schema:
+            $ref: '#/components/schemas/UtcInstant'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: 审计日志分页
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageResponse'
+                          - type: object
+                            required: [items]
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/AuditLog'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        登录或刷新接口返回的 15 分钟 Access Token，放在 `Authorization: Bearer <accessToken>`。
+        Token 无效或过期返回 `AUTH_UNAUTHORIZED`；前端不得对登录/刷新接口本身启用自动刷新逻辑。
+
+  # ===========================================================================
+  # 复用参数
+  # ===========================================================================
+  parameters:
+    XRequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: |
+        调用方生成的请求标识。只接受 1～64 个 ASCII 字母、数字、下划线或连字符；
+        缺失或非法时服务端重新生成。响应头与响应体中的 `requestId` 一致。
+      schema:
+        $ref: '#/components/schemas/RequestId'
+
+    Page:
+      name: page
+      in: query
+      required: false
+      description: 页码，从 0 开始
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+
+    Size:
+      name: size
+      in: query
+      required: false
+      description: 每页条数
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+    UserId:
+      name: userId
+      in: path
+      required: true
+      description: 用户 ID（十进制字符串）
+      schema:
+        $ref: '#/components/schemas/DecimalId'
+
+    UserIdPath:
+      name: id
+      in: path
+      required: true
+      description: 用户 ID（十进制字符串）
+      schema:
+        $ref: '#/components/schemas/DecimalId'
+
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      description: 商品 ID（十进制字符串）
+      schema:
+        $ref: '#/components/schemas/DecimalId'
+
+    ItemIdPath:
+      name: id
+      in: path
+      required: true
+      description: 商品 ID（十进制字符串）
+      schema:
+        $ref: '#/components/schemas/DecimalId'
+
+    OrderId:
+      name: id
+      in: path
+      required: true
+      description: 订单 ID（十进制字符串）
+      schema:
+        $ref: '#/components/schemas/DecimalId'
+
+    NotificationId:
+      name: id
+      in: path
+      required: true
+      description: 消息 ID（十进制字符串）
+      schema:
+        $ref: '#/components/schemas/DecimalId'
+
+    CertificationId:
+      name: id
+      in: path
+      required: true
+      description: 认证申请 ID（十进制字符串）
+      schema:
+        $ref: '#/components/schemas/DecimalId'
+
+    CategoryId:
+      name: id
+      in: path
+      required: true
+      description: 分类 ID（十进制字符串）
+      schema:
+        $ref: '#/components/schemas/DecimalId'
+
+    CategoryIdQuery:
+      name: categoryId
+      in: query
+      required: false
+      description: 分类 ID；传一级分类时包含其启用子分类
+      schema:
+        $ref: '#/components/schemas/DecimalId'
+
+  # ===========================================================================
+  # 复用响应。x-error-codes 是该 HTTP 状态允许出现的全部错误码，供校验脚本核对 §7.2。
+  # ===========================================================================
+  responses:
+    Error400:
+      description: 请求参数、查询参数或请求体不合法
+      x-error-codes:
+        - VALIDATION_ERROR
+        - FILE_INVALID_TYPE
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+    Error401:
+      description: 未认证或凭证无效
+      x-error-codes:
+        - AUTH_INVALID_CODE
+        - AUTH_UNAUTHORIZED
+        - AUTH_REFRESH_INVALID
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+    Error403:
+      description: 已认证但无权限，或账号状态不允许该操作
+      x-error-codes:
+        - AUTH_FORBIDDEN
+        - USER_DISABLED
+        - USER_CERTIFICATION_REQUIRED
+        - FILE_NOT_OWNED
+        - ORDER_OPERATION_FORBIDDEN
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+    Error404:
+      description: 资源不存在，或对当前用户不可见
+      x-error-codes:
+        - RESOURCE_NOT_FOUND
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+    Error409:
+      description: 与当前资源状态冲突
+      x-error-codes:
+        - CERTIFICATION_PENDING_EXISTS
+        - CERTIFICATION_ALREADY_REVIEWED
+        - CATEGORY_IN_USE
+        - ITEM_NOT_EDITABLE
+        - ITEM_NOT_AVAILABLE
+        - ITEM_SELF_PURCHASE
+        - ITEM_CONCURRENTLY_RESERVED
+        - ITEM_SELF_OPERATION
+        - ORDER_ILLEGAL_STATUS_TRANSITION
+        - ORDER_DUPLICATE_REQUEST
+        - REVIEW_NOT_ALLOWED
+        - REVIEW_ALREADY_EXISTS
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+    Error413:
+      description: 上传文件超过大小上限
+      x-error-codes:
+        - FILE_TOO_LARGE
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+    Error500:
+      description: 未分类的服务端异常，响应不得暴露内部细节
+      x-error-codes:
+        - INTERNAL_ERROR
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+  # ===========================================================================
+  # 数据模型
+  # ===========================================================================
+  schemas:
+
+    # -------------------------------------------------------------------------
+    # 通用信封与标量
+    # -------------------------------------------------------------------------
+    RequestId:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{1,64}$'
+      minLength: 1
+      maxLength: 64
+      description: 请求标识，1～64 个 ASCII 字母、数字、下划线或连字符
+      example: 01JXXXXXXXXXXXX
+
+    DecimalId:
+      type: string
+      pattern: '^(0|[1-9][0-9]*)$'
+      description: |
+        十进制字符串形式的 ID。请求、路径与响应一致使用字符串，
+        避免微信 JavaScript 丢失 BIGINT 精度。分页计数等非 ID 整数仍是 JSON number。
+      example: '1024'
+
+    UtcInstant:
+      type: string
+      format: date-time
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$'
+      description: UTC 时间，ISO 8601，固定毫秒三位并以 `Z` 结尾
+      example: '2026-09-10T04:50:00.000Z'
+
+    MoneyAmount:
+      type: string
+      pattern: '^(0|[1-9][0-9]*)\.[0-9]{2}$'
+      description: 两位小数的十进制字符串金额。服务端转为 BigDecimal，不使用浮点
+      example: '10.00'
+
+    Rating:
+      type: integer
+      minimum: 1
+      maximum: 5
+      description: 评分，1～5 的整数
+
+    ErrorCode:
+      type: string
+      description: §7.2 固定错误码全集
+      enum:
+        - VALIDATION_ERROR
+        - AUTH_INVALID_CODE
+        - AUTH_UNAUTHORIZED
+        - AUTH_REFRESH_INVALID
+        - AUTH_FORBIDDEN
+        - USER_DISABLED
+        - USER_CERTIFICATION_REQUIRED
+        - RESOURCE_NOT_FOUND
+        - CERTIFICATION_PENDING_EXISTS
+        - CERTIFICATION_ALREADY_REVIEWED
+        - CATEGORY_IN_USE
+        - FILE_INVALID_TYPE
+        - FILE_TOO_LARGE
+        - FILE_NOT_OWNED
+        - ITEM_NOT_EDITABLE
+        - ITEM_NOT_AVAILABLE
+        - ITEM_SELF_PURCHASE
+        - ITEM_CONCURRENTLY_RESERVED
+        - ITEM_SELF_OPERATION
+        - ORDER_ILLEGAL_STATUS_TRANSITION
+        - ORDER_OPERATION_FORBIDDEN
+        - ORDER_DUPLICATE_REQUEST
+        - REVIEW_NOT_ALLOWED
+        - REVIEW_ALREADY_EXISTS
+        - INTERNAL_ERROR
+
+    ApiResponse:
+      type: object
+      description: 所有带响应体的成功响应都使用该信封；HTTP 204 无响应体。
+      required: [code, message, requestId, timestamp]
+      properties:
+        code:
+          type: string
+          const: OK
+          description: 成功固定为 `OK`
+        message:
+          type: string
+          description: 成功固定为 `success`
+        data:
+          description: 业务数据。具体结构由各响应声明；失败响应固定为 null。
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        timestamp:
+          $ref: '#/components/schemas/UtcInstant'
+
+    ApiError:
+      type: object
+      description: 错误响应体，HTTP 状态码与 `code` 按 §7.2 一一对应。
+      required: [code, message, data, requestId, timestamp]
+      properties:
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+          description: 可读说明。不得包含堆栈、SQL、文件路径、Token 或任何敏感字段。
+        data:
+          type: 'null'
+          description: 错误响应固定为 null
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        timestamp:
+          $ref: '#/components/schemas/UtcInstant'
+
+    PageResponse:
+      type: object
+      description: 分页元数据。列表元素类型由各响应通过 allOf 补充。
+      required: [page, size, totalElements, totalPages, hasNext]
+      properties:
+        page:
+          type: integer
+          minimum: 0
+        size:
+          type: integer
+          minimum: 1
+          maximum: 100
+        totalElements:
+          type: integer
+          minimum: 0
+        totalPages:
+          type: integer
+          minimum: 0
+        hasNext:
+          type: boolean
+
+    # -------------------------------------------------------------------------
+    # §4 枚举（15 个）
+    # -------------------------------------------------------------------------
+    UserStatus:
+      type: string
+      enum: [ACTIVE, DISABLED]
+      description: UserStatus（§4）
+
+    UserRole:
+      type: string
+      enum: [USER, ADMIN]
+      description: UserRole（§4）
+
+    CertificationStatus:
+      type: string
+      enum: [NOT_SUBMITTED, PENDING, APPROVED, REJECTED]
+      description: CertificationStatus（§4）
+
+    CertificationType:
+      type: string
+      enum: [STUDENT_CARD, CAMPUS_EMAIL, MANUAL]
+      description: CertificationType（§4）
+
+    CampusStatus:
+      type: string
+      enum: [ENABLED, DISABLED]
+      description: CampusStatus（§4）
+
+    CategoryStatus:
+      type: string
+      enum: [ENABLED, DISABLED]
+      description: CategoryStatus（§4）
+
+    ItemStatus:
+      type: string
+      enum: [DRAFT, ON_SALE, RESERVED, SOLD, OFF_SHELF, DELETED]
+      description: ItemStatus（§4）
+
+    ItemCondition:
+      type: string
+      enum: [NEW, LIKE_NEW, GOOD, FAIR]
+      description: ItemCondition（§4）
+
+    TradeMode:
+      type: string
+      enum: [OFFLINE, SIMULATED_PAYMENT]
+      description: |
+        TradeMode（§4）。MVP 只接受 `OFFLINE`；`SIMULATED_PAYMENT` 保留在领域枚举中，
+        不作为已支持流程。
+
+    OrderStatus:
+      type: string
+      enum: [PENDING_CONFIRMATION, CONFIRMED, PENDING_RECEIPT, COMPLETED, CANCELLED, REJECTED]
+      description: OrderStatus（§4）
+
+    OrderAction:
+      type: string
+      enum: [CREATE, CONFIRM, REJECT, CANCEL, DELIVER, RECEIVE]
+      description: OrderAction（§4）
+
+    ReviewStatus:
+      type: string
+      enum: [VISIBLE, HIDDEN]
+      description: ReviewStatus（§4）
+
+    NotificationType:
+      type: string
+      enum:
+        - ORDER_CREATED
+        - ORDER_CONFIRMED
+        - ORDER_REJECTED
+        - ORDER_CANCELLED
+        - ORDER_DELIVERED
+        - ORDER_COMPLETED
+        - REVIEW_RECEIVED
+        - SYSTEM
+      description: NotificationType（§4）
+
+    FileBizType:
+      type: string
+      enum: [ITEM_IMAGE, AVATAR, CERTIFICATION_EVIDENCE]
+      description: FileBizType（§4）
+
+    FileStatus:
+      type: string
+      enum: [UPLOADED, BOUND, DELETED]
+      description: FileStatus（§4）。只在管理或调试场景暴露，普通接口不返回。
+
+    # -------------------------------------------------------------------------
+    # 契约层枚举（非 §4 领域枚举）
+    # -------------------------------------------------------------------------
+    OrderSide:
+      type: string
+      enum: [BUY, SELL]
+      description: 同一路径上的买卖视角枚举，不是领域状态
+
+    ItemSort:
+      type: string
+      enum: [NEWEST, PRICE_ASC, PRICE_DESC, POPULAR]
+      description: 商品搜索固定白名单；POPULAR = favorite_count DESC, view_count DESC, published_at DESC, id DESC
+
+    # -------------------------------------------------------------------------
+    # 认证
+    # -------------------------------------------------------------------------
+    WechatLoginRequest:
+      type: object
+      required: [code, deviceId]
+      properties:
+        code:
+          type: string
+          minLength: 1
+          description: 微信登录 code，仅用于换取会话，不落库
+        deviceId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: 设备标识，用于刷新令牌的设备一致性校验
+
+    RefreshTokenRequest:
+      type: object
+      required: [refreshToken, deviceId]
+      properties:
+        refreshToken:
+          type: string
+          minLength: 1
+          description: 刷新令牌明文，仅用于本次换取；服务端只保存 SHA-256 哈希
+        deviceId:
+          type: string
+          minLength: 1
+          maxLength: 64
+
+    LogoutRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+          minLength: 1
+          description: 待撤销的刷新令牌。已撤销再次提交仍返回 204，保证幂等
+
+    TokenResponse:
+      type: object
+      description: |
+        字段名在此冻结。Access Token 有效期 15 分钟（§8.1）。
+        Refresh Token 有效期固定 30 天；每次成功刷新都轮换令牌并重新计算 30 天。
+      required: [accessToken, refreshToken, tokenType, expiresIn, refreshExpiresIn, user]
+      properties:
+        accessToken:
+          type: string
+          description: 15 分钟有效期的 Access Token
+        refreshToken:
+          type: string
+          description: 新签发的刷新令牌明文，只在本响应出现一次
+        tokenType:
+          type: string
+          const: Bearer
+        expiresIn:
+          type: integer
+          minimum: 1
+          description: Access Token 剩余有效秒数，固定 900
+          example: 900
+        refreshExpiresIn:
+          type: integer
+          minimum: 1
+          const: 2592000
+          example: 2592000
+          description: Refresh Token 剩余有效秒数，固定 30 天
+        user:
+          $ref: '#/components/schemas/UserSummary'
+        certificationStatus:
+          $ref: '#/components/schemas/CertificationStatus'
+
+    # -------------------------------------------------------------------------
+    # 用户
+    # -------------------------------------------------------------------------
+    UserSummary:
+      type: object
+      description: 出现在其他资源中的用户精简摘要，永不包含 openid
+      required: [id, nickname]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        nickname:
+          type: string
+        avatarUrl:
+          type: [string, 'null']
+          description: 头像访问地址；为空表示未设置
+
+    UserProfile:
+      type: object
+      description: 仅 `GET /users/me` 与 `PATCH /users/me` 返回，属于当前用户本人
+      required: [id, role, status, nickname, certificationStatus, averageRating, reviewCount, createdAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        role:
+          $ref: '#/components/schemas/UserRole'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        nickname:
+          type: string
+        avatarUrl:
+          type: [string, 'null']
+        phone:
+          type: [string, 'null']
+          description: 手机号，仅在本人接口返回；显式 null 表示已清除
+        campus:
+          anyOf:
+            - $ref: '#/components/schemas/CampusRef'
+            - type: 'null'
+          description: 所属校区；显式 null 表示未选择
+        certificationStatus:
+          $ref: '#/components/schemas/CertificationStatus'
+        averageRating:
+          $ref: '#/components/schemas/MoneyAmount'
+          description: 平均分，两位小数字符串
+        reviewCount:
+          type: integer
+          minimum: 0
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'
+        lastLoginAt:
+          anyOf:
+            - $ref: '#/components/schemas/UtcInstant'
+            - type: 'null'
+        version:
+          type: integer
+          minimum: 0
+          description: 资料乐观锁版本，作为并发编辑保护，不是业务字段
+
+    PublicUser:
+      type: object
+      description: 公开脱敏资料，只返回下列字段
+      required: [id, nickname, certificationStatus, averageRating, reviewCount, accountActive]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        nickname:
+          type: string
+        avatarUrl:
+          type: [string, 'null']
+        campusName:
+          type: [string, 'null']
+        certificationStatus:
+          $ref: '#/components/schemas/CertificationStatus'
+        averageRating:
+          $ref: '#/components/schemas/MoneyAmount'
+        reviewCount:
+          type: integer
+          minimum: 0
+        accountActive:
+          type: boolean
+          description: 账号是否处于 `ACTIVE`。被禁用用户的历史交易评价仍可查看，此字段为 false
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'
+
+    UpdateProfileRequest:
+      type: object
+      description: |
+        仅接受下列字段。出现 role、status、openid 或评分字段即视为非法请求。
+        字段省略表示保留原值；`phone` 显式 null 表示清除；`nickname` 显式 null 非法；
+        `avatarFileId` 显式 null 表示清除头像；系统不接受校区字段。
+      properties:
+        nickname:
+          type: string
+          minLength: 1
+          maxLength: 20
+          description: 服务端清理首尾空格后保存；不允许显式 null
+        avatarFileId:
+          anyOf:
+            - $ref: '#/components/schemas/DecimalId'
+            - type: 'null'
+          description: |
+            头像文件 ID，必须来自文件上传接口且 `bizType` 为 `AVATAR`、属于当前用户、状态 `UPLOADED`。
+            服务端绑定后写入 `users.avatar_url` 并返回 `avatarUrl`；显式 null 表示清除头像。
+            客户端不得提交任意 URL。
+        phone:
+          type: [string, 'null']
+          pattern: '^1[3-9][0-9]{9}$'
+          description: 中国大陆手机号；显式 null 表示清除
+
+    UserCredit:
+      type: object
+      description: 公开信用摘要，由 review 模块（BE-09）实现
+      required: [userId, averageRating, reviewCount, distribution]
+      properties:
+        userId:
+          $ref: '#/components/schemas/DecimalId'
+        averageRating:
+          $ref: '#/components/schemas/MoneyAmount'
+        reviewCount:
+          type: integer
+          minimum: 0
+        distribution:
+          type: object
+          description: 1～5 分各档的可见评价条数；键是分数，值为非负整数
+          required: ['1', '2', '3', '4', '5']
+          properties:
+            '1':
+              type: integer
+              minimum: 0
+            '2':
+              type: integer
+              minimum: 0
+            '3':
+              type: integer
+              minimum: 0
+            '4':
+              type: integer
+              minimum: 0
+            '5':
+              type: integer
+              minimum: 0
+
+    # -------------------------------------------------------------------------
+    # 校区与分类
+    # -------------------------------------------------------------------------
+    CampusRef:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        name:
+          type: string
+
+    CategoryRef:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        name:
+          type: string
+
+    CategoryNode:
+      type: object
+      description: 分类树节点。一级节点包含 `children`，二级节点不返回 `children`
+      required: [id, name, sortNo, status]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        parentId:
+          anyOf:
+            - $ref: '#/components/schemas/DecimalId'
+            - type: 'null'
+          description: 一级分类为 null
+        name:
+          type: string
+        iconUrl:
+          type: [string, 'null']
+        sortNo:
+          type: integer
+          minimum: 0
+        status:
+          $ref: '#/components/schemas/CategoryStatus'
+        children:
+          type: array
+          description: 仅一级节点存在；只包含 `ENABLED` 的二级分类
+          items:
+            $ref: '#/components/schemas/CategoryNode'
+
+    CategoryTree:
+      type: object
+      description: 只包含启用分类的两级树
+      required: [categories]
+      properties:
+        categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/CategoryNode'
+
+    Category:
+      type: object
+      description: 管理接口返回的分类完整结构
+      required: [id, name, sortNo, status, createdAt, updatedAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        parentId:
+          anyOf:
+            - $ref: '#/components/schemas/DecimalId'
+            - type: 'null'
+        name:
+          type: string
+        iconUrl:
+          type: [string, 'null']
+        sortNo:
+          type: integer
+          minimum: 0
+        status:
+          $ref: '#/components/schemas/CategoryStatus'
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'
+        updatedAt:
+          $ref: '#/components/schemas/UtcInstant'
+
+    CreateCategoryRequest:
+      type: object
+      required: [name, sortNo]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 20
+          description: 同一父级下名称唯一
+        parentId:
+          anyOf:
+            - $ref: '#/components/schemas/DecimalId'
+            - type: 'null'
+          description: null 表示创建一级分类；非空时父分类必须是一级且为 `ENABLED`
+        iconUrl:
+          type: [string, 'null']
+        sortNo:
+          type: integer
+          minimum: 0
+
+    UpdateCategoryRequest:
+      type: object
+      description: 字段省略表示保留原值。分类层级 `parentId` 不可修改
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 20
+        iconUrl:
+          type: [string, 'null']
+        sortNo:
+          type: integer
+          minimum: 0
+
+    # -------------------------------------------------------------------------
+    # 文件
+    # -------------------------------------------------------------------------
+    FileObject:
+      type: object
+      description: |
+        上传结果。只返回业务可用字段，绝不返回对象存储的内部 key 或路径。
+        商品图片只能提交本接口返回的 `fileId`，前端不得自行提交最终 URL。
+      required: [fileId, url, bizType, contentType, sizeBytes, createdAt]
+      properties:
+        fileId:
+          $ref: '#/components/schemas/DecimalId'
+        url:
+          type: string
+          description: 受控访问地址，见契约决策表中的文件访问策略
+        bizType:
+          $ref: '#/components/schemas/FileBizType'
+        originalName:
+          type: [string, 'null']
+        contentType:
+          type: string
+        sizeBytes:
+          type: integer
+          minimum: 1
+        sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: 文件内容 SHA-256，小写十六进制
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'
+
+    # -------------------------------------------------------------------------
+    # 校园认证
+    # -------------------------------------------------------------------------
+    SubmitCertificationRequest:
+      type: object
+      required: [type, realName, studentNo]
+      properties:
+        type:
+          type: string
+          const: MANUAL
+          description: 当前 MVP 仅支持人工审核
+        realName:
+          type: string
+          minLength: 2
+          maxLength: 30
+          description: 明文提交，服务端保存脱敏展示值；响应与日志不返回明文
+        studentNo:
+          type: string
+          minLength: 4
+          maxLength: 32
+          description: 明文提交，服务端保存脱敏展示值；响应与日志不返回明文
+
+    Certification:
+      type: object
+      description: |
+        认证申请。只返回脱敏后的姓名与学号，不返回证据文件内部路径，
+        也不返回审核人身份细节之外的任何内部数据。
+      required: [id, userId, campus, type, status, createdAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        userId:
+          $ref: '#/components/schemas/DecimalId'
+        campus:
+          $ref: '#/components/schemas/CampusRef'
+        type:
+          $ref: '#/components/schemas/CertificationType'
+        realNameMasked:
+          type: [string, 'null']
+          description: 脱敏姓名，例如 `张*`
+        studentNoMasked:
+          type: [string, 'null']
+          description: 脱敏学号
+        status:
+          $ref: '#/components/schemas/CertificationStatus'
+        rejectReason:
+          type: [string, 'null']
+        reviewedAt:
+          anyOf:
+            - $ref: '#/components/schemas/UtcInstant'
+            - type: 'null'
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'
+        updatedAt:
+          $ref: '#/components/schemas/UtcInstant'
+
+    CertificationLatest:
+      type: object
+      description: '从未提交过认证时返回 `{ "status": "NOT_SUBMITTED", "application": null }`'
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/CertificationStatus'
+        application:
+          anyOf:
+            - $ref: '#/components/schemas/Certification'
+            - type: 'null'
+
+    RejectCertificationRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 2
+          maxLength: 200
+          description: 驳回原因，2～200 字
+
+    # -------------------------------------------------------------------------
+    # 商品
+    # -------------------------------------------------------------------------
+    ItemImage:
+      type: object
+      required: [fileId, url, sortNo]
+      properties:
+        fileId:
+          $ref: '#/components/schemas/DecimalId'
+        url:
+          type: string
+        sortNo:
+          type: integer
+          minimum: 0
+
+    CreateItemRequest:
+      type: object
+      required: [title, description, price, condition, categoryId, imageFileIds]
+      properties:
+        title:
+          type: string
+          minLength: 2
+          maxLength: 80
+        description:
+          type: string
+          minLength: 10
+          maxLength: 2000
+        price:
+          $ref: '#/components/schemas/MoneyAmount'
+        originalPrice:
+          anyOf:
+            - $ref: '#/components/schemas/MoneyAmount'
+            - type: 'null'
+          description: 原价，不得小于售价
+        condition:
+          $ref: '#/components/schemas/ItemCondition'
+        categoryId:
+          $ref: '#/components/schemas/DecimalId'
+          description: 必须是启用的二级分类
+        imageFileIds:
+          type: array
+          minItems: 1
+          maxItems: 9
+          description: 有序图片，1～9 张；每个文件必须属于当前用户、类型为 ITEM_IMAGE、状态 UPLOADED
+          items:
+            $ref: '#/components/schemas/DecimalId'
+
+    UpdateItemRequest:
+      type: object
+      description: 只允许修改 `DRAFT` 或 `OFF_SHELF` 商品；字段省略表示保留原值
+      required: [version]
+      properties:
+        version:
+          type: integer
+          minimum: 0
+          description: 乐观锁版本，必须与当前商品一致，否则返回 `ITEM_NOT_EDITABLE`
+        title:
+          type: string
+          minLength: 2
+          maxLength: 80
+        description:
+          type: string
+          minLength: 10
+          maxLength: 2000
+        price:
+          $ref: '#/components/schemas/MoneyAmount'
+        originalPrice:
+          anyOf:
+            - $ref: '#/components/schemas/MoneyAmount'
+            - type: 'null'
+        condition:
+          $ref: '#/components/schemas/ItemCondition'
+        categoryId:
+          $ref: '#/components/schemas/DecimalId'
+        imageFileIds:
+          type: array
+          minItems: 1
+          maxItems: 9
+          description: 替换为完整有序图片列表，非增量操作
+          items:
+            $ref: '#/components/schemas/DecimalId'
+
+    ItemCard:
+      type: object
+      description: 搜索与收藏列表使用的卡片字段，只带首图
+      required: [id, title, price, condition, status, coverImageUrl, favoriteCount]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        title:
+          type: string
+        price:
+          $ref: '#/components/schemas/MoneyAmount'
+        originalPrice:
+          anyOf:
+            - $ref: '#/components/schemas/MoneyAmount'
+            - type: 'null'
+        condition:
+          $ref: '#/components/schemas/ItemCondition'
+        status:
+          $ref: '#/components/schemas/ItemStatus'
+        coverImageUrl:
+          type: [string, 'null']
+        campus:
+          anyOf:
+            - $ref: '#/components/schemas/CampusRef'
+            - type: 'null'
+        category:
+          anyOf:
+            - $ref: '#/components/schemas/CategoryRef'
+            - type: 'null'
+        favoriteCount:
+          type: integer
+          minimum: 0
+        viewCount:
+          type: integer
+          minimum: 0
+        publishedAt:
+          anyOf:
+            - $ref: '#/components/schemas/UtcInstant'
+            - type: 'null'
+
+    ItemDetail:
+      type: object
+      required: [id, title, description, price, condition, status, images, seller, isOwner, canBuy, allowedActions, favoriteCount, viewCount, createdAt, updatedAt, version]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        title:
+          type: string
+        description:
+          type: string
+        price:
+          $ref: '#/components/schemas/MoneyAmount'
+        originalPrice:
+          anyOf:
+            - $ref: '#/components/schemas/MoneyAmount'
+            - type: 'null'
+        condition:
+          $ref: '#/components/schemas/ItemCondition'
+        status:
+          $ref: '#/components/schemas/ItemStatus'
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/ItemImage'
+        seller:
+          $ref: '#/components/schemas/UserSummary'
+        category:
+          $ref: '#/components/schemas/CategoryRef'
+        campus:
+          $ref: '#/components/schemas/CampusRef'
+        favorited:
+          type: [boolean, 'null']
+          description: 匿名请求返回 null；带 Token 的请求返回真实收藏状态
+        isOwner:
+          type: boolean
+        canBuy:
+          type: boolean
+          description: 是否满足下单条件；仅在带 Token 时可能为 true
+        allowedActions:
+          type: array
+          description: 当前用户对该商品可执行的操作，用于前端展示；后端每次仍重新校验
+          items:
+            type: string
+            enum: [EDIT, PUBLISH, OFF_SHELF, DELETE, FAVORITE, BUY]
+        adminLock:
+          type: boolean
+        offShelfReason:
+          type: [string, 'null']
+        favoriteCount:
+          type: integer
+          minimum: 0
+        viewCount:
+          type: integer
+          minimum: 0
+        publishedAt:
+          anyOf:
+            - $ref: '#/components/schemas/UtcInstant'
+            - type: 'null'
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'
+        updatedAt:
+          $ref: '#/components/schemas/UtcInstant'
+        version:
+          type: integer
+          minimum: 0
+
+    MyItemSummary:
+      type: object
+      description: 我的发布列表项，包含需要提示的状态信息
+      required: [id, title, price, status, favoriteCount, viewCount, createdAt, updatedAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        title:
+          type: string
+        price:
+          $ref: '#/components/schemas/MoneyAmount'
+        status:
+          $ref: '#/components/schemas/ItemStatus'
+        coverImageUrl:
+          type: [string, 'null']
+        adminLock:
+          type: boolean
+        offShelfReason:
+          type: [string, 'null']
+        favoriteCount:
+          type: integer
+          minimum: 0
+        viewCount:
+          type: integer
+          minimum: 0
+        publishedAt:
+          anyOf:
+            - $ref: '#/components/schemas/UtcInstant'
+            - type: 'null'
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'
+        updatedAt:
+          $ref: '#/components/schemas/UtcInstant'
+        version:
+          type: integer
+          minimum: 0
+
+    AdminItem:
+      type: object
+      description: 管理端商品条目，不受 `ON_SALE` 限制
+      required: [id, title, price, status, seller, favoriteCount, viewCount, createdAt, updatedAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        title:
+          type: string
+        price:
+          $ref: '#/components/schemas/MoneyAmount'
+        status:
+          $ref: '#/components/schemas/ItemStatus'
+        seller:
+          $ref: '#/components/schemas/UserSummary'
+        category:
+          anyOf:
+            - $ref: '#/components/schemas/CategoryRef'
+            - type: 'null'
+        campus:
+          anyOf:
+            - $ref: '#/components/schemas/CampusRef'
+            - type: 'null'
+        adminLock:
+          type: boolean
+        offShelfReason:
+          type: [string, 'null']
+        favoriteCount:
+          type: integer
+          minimum: 0
+        viewCount:
+          type: integer
+          minimum: 0
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'
+        updatedAt:
+          $ref: '#/components/schemas/UtcInstant'
+
+    AdminOffShelfRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 2
+          maxLength: 200
+          description: 强制下架原因，2～200 字；会写入卖家消息和审计日志
+
+    # -------------------------------------------------------------------------
+    # 收藏
+    # -------------------------------------------------------------------------
+    FavoriteStatus:
+      type: object
+      required: [favorited]
+      properties:
+        favorited:
+          type: boolean
+
+    # -------------------------------------------------------------------------
+    # 订单
+    # -------------------------------------------------------------------------
+    CreateOrderRequest:
+      type: object
+      required: [itemId, tradeMode, clientRequestId]
+      properties:
+        itemId:
+          $ref: '#/components/schemas/DecimalId'
+        tradeMode:
+          allOf:
+            - $ref: '#/components/schemas/TradeMode'
+          description: MVP 只接受 `OFFLINE`
+        clientRequestId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: |
+            用户维度幂等键。同一买家 + 该键只能产生一个订单；
+            与已存在订单的 `itemId`、`tradeMode` 一致时返回 200 重放原订单，不一致返回 `ORDER_DUPLICATE_REQUEST`。
+
+    OrderReasonRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 2
+          maxLength: 200
+          description: 拒单或取消的原因，2～200 字
+
+    OrderItemSnapshot:
+      type: object
+      description: 下单时固化的商品快照，商品后续修改不影响订单展示
+      required: [itemId, title, price]
+      properties:
+        itemId:
+          $ref: '#/components/schemas/DecimalId'
+        title:
+          type: string
+        imageUrl:
+          type: [string, 'null']
+        price:
+          $ref: '#/components/schemas/MoneyAmount'
+
+    OrderEvent:
+      type: object
+      description: 只追加的订单事件
+      required: [id, action, toStatus, createdAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        action:
+          $ref: '#/components/schemas/OrderAction'
+        fromStatus:
+          anyOf:
+            - $ref: '#/components/schemas/OrderStatus'
+            - type: 'null'
+          description: 创建事件没有前置状态
+        toStatus:
+          $ref: '#/components/schemas/OrderStatus'
+        operator:
+          $ref: '#/components/schemas/UserSummary'
+        remark:
+          type: [string, 'null']
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'
+
+    OrderSummary:
+      type: object
+      required: [id, orderNo, status, tradeMode, amount, item, counterpart, createdAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        orderNo:
+          type: string
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        tradeMode:
+          $ref: '#/components/schemas/TradeMode'
+        amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        item:
+          $ref: '#/components/schemas/OrderItemSnapshot'
+        counterpart:
+          $ref: '#/components/schemas/UserSummary'
+          description: 买入列表返回卖家，卖出列表返回买家
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'
+        updatedAt:
+          $ref: '#/components/schemas/UtcInstant'
+
+    OrderDetail:
+      type: object
+      required: [id, orderNo, status, tradeMode, amount, item, buyer, seller, allowedActions, events, createdAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        orderNo:
+          type: string
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        tradeMode:
+          $ref: '#/components/schemas/TradeMode'
+        amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        cancelReason:
+          type: [string, 'null']
+        item:
+          $ref: '#/components/schemas/OrderItemSnapshot'
+        buyer:
+          $ref: '#/components/schemas/UserSummary'
+        seller:
+          $ref: '#/components/schemas/UserSummary'
+        allowedActions:
+          type: array
+          description: 当前用户在当前状态可执行的订单操作；后端在处理请求时仍重新校验
+          items:
+            $ref: '#/components/schemas/OrderAction'
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderEvent'
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'
+        confirmedAt:
+          anyOf:
+            - $ref: '#/components/schemas/UtcInstant'
+            - type: 'null'
+        deliveredAt:
+          anyOf:
+            - $ref: '#/components/schemas/UtcInstant'
+            - type: 'null'
+        completedAt:
+          anyOf:
+            - $ref: '#/components/schemas/UtcInstant'
+            - type: 'null'
+        cancelledAt:
+          anyOf:
+            - $ref: '#/components/schemas/UtcInstant'
+            - type: 'null'
+        updatedAt:
+          $ref: '#/components/schemas/UtcInstant'
+
+    # -------------------------------------------------------------------------
+    # 评价
+    # -------------------------------------------------------------------------
+    CreateReviewRequest:
+      type: object
+      required: [orderId, rating]
+      properties:
+        orderId:
+          $ref: '#/components/schemas/DecimalId'
+        rating:
+          $ref: '#/components/schemas/Rating'
+        content:
+          type: [string, 'null']
+          maxLength: 500
+          description: 评价内容，可省略
+        version:
+          type: integer
+          minimum: 0
+          description: 订单版本，可选；提供时用于并发校验
+
+    Review:
+      type: object
+      required: [id, orderId, reviewer, reviewee, rating, status, createdAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        orderId:
+          $ref: '#/components/schemas/DecimalId'
+        reviewer:
+          $ref: '#/components/schemas/UserSummary'
+        reviewee:
+          $ref: '#/components/schemas/UserSummary'
+        rating:
+          $ref: '#/components/schemas/Rating'
+        content:
+          type: [string, 'null']
+        status:
+          $ref: '#/components/schemas/ReviewStatus'
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'
+
+    ReviewEligibility:
+      type: object
+      required: [orderId, canReview, counterpartReviewed]
+      properties:
+        orderId:
+          $ref: '#/components/schemas/DecimalId'
+        canReview:
+          type: boolean
+          description: 当前用户是否还能评价该订单
+        myReviewId:
+          anyOf:
+            - $ref: '#/components/schemas/DecimalId'
+            - type: 'null'
+        counterpartReviewed:
+          type: boolean
+          description: 对端是否已评价
+        counterpartReviewId:
+          anyOf:
+            - $ref: '#/components/schemas/DecimalId'
+            - type: 'null'
+
+    # -------------------------------------------------------------------------
+    # 消息
+    # -------------------------------------------------------------------------
+    Notification:
+      type: object
+      required: [id, type, title, content, read, createdAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        type:
+          $ref: '#/components/schemas/NotificationType'
+        title:
+          type: string
+        content:
+          type: string
+        bizType:
+          type: [string, 'null']
+          description: 关联业务类型，用于前端跳转
+        bizId:
+          $ref: '#/components/schemas/DecimalId'
+          description: 关联业务 ID；无关联时省略
+        read:
+          type: boolean
+        readAt:
+          anyOf:
+            - $ref: '#/components/schemas/UtcInstant'
+            - type: 'null'
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'
+
+    # -------------------------------------------------------------------------
+    # 管理
+    # -------------------------------------------------------------------------
+    AdminUser:
+      type: object
+      description: 管理端用户条目。即使对管理员也不返回 openid
+      required: [id, nickname, role, status, certificationStatus, averageRating, reviewCount, createdAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        nickname:
+          type: string
+        avatarUrl:
+          type: [string, 'null']
+        phone:
+          type: [string, 'null']
+        role:
+          $ref: '#/components/schemas/UserRole'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        campus:
+          anyOf:
+            - $ref: '#/components/schemas/CampusRef'
+            - type: 'null'
+        certificationStatus:
+          $ref: '#/components/schemas/CertificationStatus'
+        averageRating:
+          $ref: '#/components/schemas/MoneyAmount'
+        reviewCount:
+          type: integer
+          minimum: 0
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'
+        lastLoginAt:
+          anyOf:
+            - $ref: '#/components/schemas/UtcInstant'
+            - type: 'null'
+
+    AuditLog:
+      type: object
+      description: |
+        只追加的管理审计记录，接口只读。`detail` 必须在写入时剔除密钥、Token、
+        微信会话信息、完整手机号与学号；响应中也不得出现原始敏感值。
+      required: [id, action, targetType, targetId, requestId, createdAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        operator:
+          $ref: '#/components/schemas/UserSummary'
+        action:
+          type: string
+          description: 审计动作名
+        targetType:
+          type: string
+        targetId:
+          anyOf:
+            - $ref: '#/components/schemas/DecimalId'
+            - type: 'null'
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        detail:
+          type: [object, 'null']
+          description: 已脱敏的补充信息，结构随动作变化
+          additionalProperties: true
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'

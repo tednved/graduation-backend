@@ -16,9 +16,10 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | BE-01 | `main` | 项目负责人 | DONE | 2026-09-06 | 历史初始化，无 PR | 无 | Spring Boot 4.1.1 / Java 21 | 2026-09-06 |
 | BE-02 | `main` | 项目负责人 / Codex | DONE | 2026-09-06 | 历史初始化，无 PR | 无 | Maven 依赖基线 | 2026-09-06 |
-| PM-03 | `docs/PM-03-collaboration-visibility` | Codex | REVIEW | 2026-09-06 | [#2](https://github.com/tednved/graduation-backend/pull/2) | `docs/handoffs/PM-03.md` | 无契约变化 | 2026-09-10 |
-| DB-01 | `feat/DB-01-initial-schema` | 数据库 Agent（真实 MySQL 实测、PM-05 修订、PR #1 第二轮修订由主线程补做） | REVIEW | 2026-09-10 | [#1](https://github.com/tednved/graduation-backend/pull/1) | `docs/handoffs/DB-01.md` | Flyway V1～V5 / MySQL 8（V6 排序规则修订转 DB-02） | 2026-09-10 |
-| DB-02 | `fix/DB-02-identifier-collations` | 数据库 Agent | REVIEW | 2026-09-10 | [#3](https://github.com/tednved/graduation-backend/pull/3) | `docs/handoffs/DB-02.md` | Flyway V6（6 个标识符列改 `utf8mb4_0900_bin`） | 2026-09-10 |
+| PM-03 | `docs/PM-03-collaboration-visibility` | Codex | DONE | 2026-09-06 | [#2](https://github.com/tednved/graduation-backend/pull/2) | `docs/handoffs/PM-03.md` | 无契约变化 | 2026-09-10 |
+| DB-01 | `feat/DB-01-initial-schema` | 数据库 Agent | DONE | 2026-09-10 | [#1](https://github.com/tednved/graduation-backend/pull/1) | `docs/handoffs/DB-01.md` | Flyway V1～V5 | 2026-09-10 |
+| DB-02 | `fix/DB-02-identifier-collations` | 数据库 Agent | DONE | 2026-09-10 | [#3](https://github.com/tednved/graduation-backend/pull/3) | `docs/handoffs/DB-02.md` | Flyway V6 | 2026-09-10 |
+| API-01 | `docs/API-01-openapi-contract` | API 契约 Agent / Codex | REVIEW | 2026-09-10 | [#4](https://github.com/tednved/graduation-backend/pull/4) | `docs/handoffs/API-01.md` | OpenAPI 3.1 / Flyway V6 `bea0f7b8` | 2026-09-11 |
 
 ## 合并后更新要求
 
