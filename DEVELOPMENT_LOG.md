@@ -20,7 +20,7 @@
 | DB-01 | `feat/DB-01-initial-schema` | 数据库 Agent | DONE | 2026-09-10 | [#1](https://github.com/tednved/graduation-backend/pull/1) | `docs/handoffs/DB-01.md` | Flyway V1～V5 | 2026-09-10 |
 | DB-02 | `fix/DB-02-identifier-collations` | 数据库 Agent | DONE | 2026-09-10 | [#3](https://github.com/tednved/graduation-backend/pull/3) | `docs/handoffs/DB-02.md` | Flyway V6 | 2026-09-10 |
 | API-01 | `docs/API-01-openapi-contract` | API 契约 Agent / Codex | DONE | 2026-09-10 | [#4](https://github.com/tednved/graduation-backend/pull/4) | `docs/handoffs/API-01.md` | OpenAPI 3.1 / Flyway V6 `bea0f7b8` | 2026-09-12 |
-| BE-MVP-01 | `feat/BE-MVP-01-core` | Claude | IN_PROGRESS | 2026-09-11 | [#5](https://github.com/tednved/graduation-backend/pull/5) | `docs/handoffs/BE-MVP-01.md` | API-01 `e15baa77` / Flyway V6 | 2026-09-12 |
+| BE-MVP-01 | `feat/BE-MVP-01-core` | Claude | DONE | 2026-09-11 | [#5](https://github.com/tednved/graduation-backend/pull/5) | `docs/handoffs/BE-MVP-01.md` | API-01 `e15baa77` / Flyway V6 | 2026-09-12 |
 
 ## 合并后更新要求
 

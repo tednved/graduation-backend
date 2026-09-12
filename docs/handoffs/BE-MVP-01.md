@@ -7,8 +7,8 @@
 | 任务 ID | BE-MVP-01 |
 | 分支 | `feat/BE-MVP-01-core` |
 | 基线 | `origin/main` = `e15baa7`（API-01 单校区冻结版；数据库基线 Flyway V6） |
-| PR | [#5](https://github.com/tednved/graduation-backend/pull/5)（Draft） |
-| 状态 | **IN_PROGRESS** —— 代码与真实 MySQL 测试完成；前后端真实联调与微信开发者工具 GUI 验收未执行 |
+| PR | [#5](https://github.com/tednved/graduation-backend/pull/5)（已合并为 `2a16916d`） |
+| 状态 | **DONE** —— 代码审查与真实 MySQL 测试通过，PR #5 已合并；整包 GUI 验收由项目负责人在合并版 `main` 上执行 |
 | 契约源 | `backend/openapi.yaml`（本 PR 未修改） |
 
 本任务一次完成公共底座、登录资料、本地文件、MANUAL 认证与分类管理，闭合「登录 → 资料 → 认证 → 分类」。
