@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  商品列表查询。分页由 PaginationInnerInterceptor 追加 LIMIT，SQL 里不写。
+  排序值已在 ItemQueryService 里按白名单校验，这里再用 <choose> 固定成字面量，避免拼接注入。
+  首图 = sort_no 最小的那张；items 与 campuses/categories 都是 NOT NULL 外键，用 JOIN 取名字。
+-->
+<mapper namespace="com.graduation.backend.item.query.ItemQueryMapper">
+
+    <sql id="coverImageUrl">
+        (SELECT ii.image_url FROM item_images ii WHERE ii.item_id = i.id
+         ORDER BY ii.sort_no ASC LIMIT 1) AS cover_image_url
+    </sql>
+
+    <select id="searchCards" resultType="com.graduation.backend.item.query.ItemCardRow">
+        SELECT i.id,
+               i.title,
+               i.price,
+               i.original_price,
+               i.condition_level,
+               i.status,
+               <include refid="coverImageUrl"/>,
+               i.campus_id,
+               c.name AS campus_name,
+               i.category_id,
+               cat.name AS category_name,
+               i.favorite_count,
+               i.view_count,
+               i.published_at
+        FROM items i
+                 JOIN campuses c ON c.id = i.campus_id
+                 JOIN categories cat ON cat.id = i.category_id
+        WHERE i.status = 'ON_SALE'
+        <if test="keyword != null">
+            AND i.title LIKE #{keyword} ESCAPE '!'
+        </if>
+        <if test="categoryIds != null and categoryIds.size() > 0">
+            AND i.category_id IN
+            <foreach item="categoryId" collection="categoryIds" open="(" separator="," close=")">
+                #{categoryId}
+            </foreach>
+        </if>
+        <if test="condition != null">
+            AND i.condition_level = #{condition}
+        </if>
+        <if test="minPrice != null">
+            AND i.price &gt;= #{minPrice}
+        </if>
+        <if test="maxPrice != null">
+            AND i.price &lt;= #{maxPrice}
+        </if>
+        <choose>
+            <when test="sort == 'PRICE_ASC'">
+                ORDER BY i.price ASC, i.id DESC
+            </when>
+            <when test="sort == 'PRICE_DESC'">
+                ORDER BY i.price DESC, i.id DESC
+            </when>
+            <when test="sort == 'POPULAR'">
+                ORDER BY i.favorite_count DESC, i.view_count DESC, i.published_at DESC, i.id DESC
+            </when>
+            <otherwise>
+                ORDER BY i.published_at DESC, i.id DESC
+            </otherwise>
+        </choose>
+    </select>
+
+    <select id="selectMyItems" resultType="com.graduation.backend.item.query.ItemCardRow">
+        SELECT i.id,
+               i.title,
+               i.price,
+               i.status,
+               <include refid="coverImageUrl"/>,
+               i.admin_lock,
+               i.off_shelf_reason,
+               i.favorite_count,
+               i.view_count,
+               i.published_at,
+               i.created_at,
+               i.updated_at,
+               i.version
+        FROM items i
+        WHERE i.seller_id = #{sellerId}
+        <if test="status != null">
+            AND i.status = #{status}
+        </if>
+        ORDER BY i.created_at DESC, i.id DESC
+    </select>
+
+    <!--
+      分类筛选的展开：只保留「启用的二级分类」。
+      - categoryId 是二级分类：返回它自身（停用则返回空，搜索得到空页）；
+      - categoryId 是一级分类：返回其启用的子分类；
+      - 不存在的 ID：返回空。
+      parent_id IS NOT NULL 保证一级分类本身不会作为筛选项出现。
+    -->
+    <select id="findSellableCategoryIds" resultType="java.lang.Long">
+        SELECT c.id
+        FROM categories c
+        WHERE c.parent_id IS NOT NULL
+          AND c.status = 'ENABLED'
+          AND (c.id = #{categoryId} OR c.parent_id = #{categoryId})
+    </select>
+
+</mapper>

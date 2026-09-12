@@ -871,7 +871,8 @@ paths:
       summary: 修改商品
       description: |
         仅商品本人；仅 `DRAFT`/`OFF_SHELF` 可修改，被管理员锁定（`adminLock=true`）的商品不可修改，否则 `ITEM_NOT_EDITABLE`。
-        本接口为全量替换，必须携带当前 `version`；版本不匹配返回 `ITEM_NOT_EDITABLE`。
+        本接口为全量替换：必须携带当前 `version` 与全部业务字段；版本不匹配返回 `ITEM_NOT_EDITABLE`，
+        字段缺失或为 `null` 返回 `VALIDATION_ERROR`（`originalPrice` 可为 `null`，表示清除原价）。
         替换图片时校验新文件归属，被替换的文件解绑进入待清理状态。
       security: [{bearerAuth: []}]
       parameters:
@@ -3065,8 +3066,11 @@ components:
 
     UpdateItemRequest:
       type: object
-      description: 只允许修改 `DRAFT` 或 `OFF_SHELF` 商品；字段省略表示保留原值
-      required: [version]
+      description: |
+        只允许修改 `DRAFT` 或 `OFF_SHELF` 商品。本接口为**全量替换**：`version` 与全部业务字段均必填，
+        字段省略或显式 `null` 一律返回 `VALIDATION_ERROR`，不保留原值。
+        唯一例外是 `originalPrice`，可以显式传 `null` 表示清除原价。
+      required: [version, title, description, price, originalPrice, condition, categoryId, imageFileIds]
       properties:
         version:
           type: integer
