@@ -8,7 +8,7 @@
 | 分支 | `feat/BE-MVP-02-item-favorite` |
 | 基线 | `origin/main` = `91d2cf9`（BE-MVP-01 合并后；契约 API-01 冻结版 / Flyway V6） |
 | PR | [#6](https://github.com/tednved/graduation-backend/pull/6)（Draft） |
-| 状态 | **IN_PROGRESS** —— 实现与真实库验证均已完成（真实 MySQL 36/36，见 §5/§8）；真实前后端联调 22/22（见 §9）。PR 仍为 Draft，等待负责人验收；不得由 Agent 置 DONE |
+| 状态 | **DONE** —— PR #6 已 squash 合并为 `f4ce306`；真实 MySQL 36/36、真实联调 22/22 与开发者工具 GUI 冒烟通过 |
 | 契约源 | `backend/openapi.yaml`（**本 PR 修改了 `PUT /items/{id}` 一处**：全量替换裁定，见 §10） |
 
 本任务闭合「发布 → 编辑 → 上下架 → 详情 → 搜索 → 收藏」商品闭环，含管理端强制下架。
