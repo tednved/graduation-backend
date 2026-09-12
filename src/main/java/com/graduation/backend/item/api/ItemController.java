@@ -73,7 +73,7 @@ public class ItemController {
         return ApiResponse.ok(itemQueryService.detail(id, viewerResolver.resolve()));
     }
 
-    /** 修改商品：省略字段保留原值，{@code version} 必填。 */
+    /** 修改商品：全量替换，{@code version} 与全部业务字段均必填。 */
     @PutMapping("/items/{id}")
     public ApiResponse<ItemDetailResponse> update(@PathVariable("id") Long id,
                                                   @Valid @RequestBody UpdateItemRequest request) {

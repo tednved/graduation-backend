@@ -9,7 +9,7 @@
 | 基线 | `origin/main` = `91d2cf9`（BE-MVP-01 合并后；契约 API-01 冻结版 / Flyway V6） |
 | PR | [#6](https://github.com/tednved/graduation-backend/pull/6)（Draft） |
 | 状态 | **IN_PROGRESS** —— 实现与真实库验证均已完成（真实 MySQL 36/36，见 §5/§8）；真实前后端联调 22/22（见 §9）。PR 仍为 Draft，等待负责人验收；不得由 Agent 置 DONE |
-| 契约源 | `backend/openapi.yaml`（本 PR 未修改） |
+| 契约源 | `backend/openapi.yaml`（**本 PR 修改了 `PUT /items/{id}` 一处**：全量替换裁定，见 §10） |
 
 本任务闭合「发布 → 编辑 → 上下架 → 详情 → 搜索 → 收藏」商品闭环，含管理端强制下架。
 
@@ -20,7 +20,7 @@
 | 范围 | 落实 |
 | --- | --- |
 | 创建草稿 | `POST /items`：要求 ACTIVE + 认证 `APPROVED`（否则 403 `USER_CERTIFICATION_REQUIRED`）；请求不接受校区字段，服务端按 `code=MAIN` 绑定唯一校区；金额用字符串接收后经 `Money` 转 `BigDecimal`（两位小数、上限 `99999999.99`）；图片 1~9 张、必须本人 `ITEM_IMAGE` 且 `UPLOADED`；`sortNo` 由服务端按入参顺序生成 1~9 |
-| 编辑 | `PUT /items/{id}`：省略字段保留原值（见 §6 契约矛盾），显式 `null` 仅 `originalPrice` 有意义（清除），其余字段显式 `null` 400；`version` 必填，不匹配 409 `ITEM_NOT_EDITABLE`；仅 `DRAFT`/`OFF_SHELF` 且未 `adminLock` 可改 |
+| 编辑 | `PUT /items/{id}`：**全量替换**（2026-09-12 裁定，见 §10）——`version` 与全部业务字段必填，字段省略或显式 `null` 一律 400 `VALIDATION_ERROR`，不保留原值；唯一例外是 `originalPrice` 可为 `null`（清除原价），但键必须出现；`version` 不匹配 409 `ITEM_NOT_EDITABLE`；仅 `DRAFT`/`OFF_SHELF` 且未 `adminLock` 可改；图片随请求整体替换 |
 | 上下架/删除 | 上架复核分类与校区仍启用、至少一张图片；下架仅 `ON_SALE`；删除只改状态为 `DELETED`（存在进行中订单时 409） |
 | 详情 | `GET /items/{id}` 匿名可读；`favorited` 匿名返回 `null`（与「未收藏」区分）；`isOwner`/`canBuy`/`allowedActions` 按查看者身份计算；`DRAFT`/`DELETED` 仅本人与管理员可见，他人一律 404 |
 | 搜索 | `GET /items` 只返回 `ON_SALE`；关键词（`%`/`_` 转义）、分类（传一级自动展开启用子分类）、成色、价格区间、四种排序（枚举白名单）；走 MyBatis-Plus 物理分页，排序值用 `<choose>` 固定字面量 |
@@ -55,7 +55,7 @@
 | `file/application/FileService.java` | 新增 `requireBindableItemImage`/`bindItemImage`/`unbindItemImage` | 纯新增方法，未改既有方法体 |
 | `file/domain/FileObject.java` | 新增 `markDeleted()` | **超出你给出的写入范围**（该范围只列到 `FileService`）。为了让「被替换的图片解绑进入待清理状态」有领域入口，必须有一个方法把状态置为 `DELETED`；纯新增、无调用方，未改动既有行为。请审查时确认是否接受 |
 
-未改动：`openapi.yaml`、`pom.xml`、`src/main/resources/db/migration/**`（V1～V6）、`common/**` 既有行为、其他业务模块。表 `items`/`item_images`（V2）与 `favorites`（V3）已存在，**未新增迁移**。
+未改动：`pom.xml`、`src/main/resources/db/migration/**`（V1～V6）、`common/**` 既有行为、其他业务模块。表 `items`/`item_images`（V2）与 `favorites`（V3）已存在，**未新增迁移**。`openapi.yaml` 仅改 `PUT /items/{id}` 一处（见 §10）。
 
 ---
 
@@ -86,7 +86,7 @@ DB_IT_USERNAME=<user> DB_IT_PASSWORD=<pwd> ./mvnw -B test -Dtest=ItemApiFlowTest
 
 ## 5. 测试覆盖（已在真实库执行，36/36 全绿）
 
-- `ItemApiFlowTests`（15 个用例）：创建/上架/搜索/详情主链路（含 MAIN 校区绑定、`sortNo`、`coverImageUrl`、`allowedActions`）；匿名 vs 买家 vs 卖家的详情个性化；浏览量自增落库；认证前置（401 / `USER_CERTIFICATION_REQUIRED` / `USER_DISABLED`）；图片数量、重复、他人文件、类型不符、文件不存在、`campusId` 契约外字段；分类 404/一级/停用，以及分类停用后不能上架；金额与文本边界；编辑的「省略保留 / 显式 null / 版本冲突 / 图片替换解绑」；状态机 409；删除只改状态；草稿可见性；非卖家 403 与不可见 404；管理端强制下架 + 审计 + 锁定后不可改不可重上架；我的发布与搜索过滤。
+- `ItemApiFlowTests`（15 个用例）：创建/上架/搜索/详情主链路（含 MAIN 校区绑定、`sortNo`、`coverImageUrl`、`allowedActions`）；匿名 vs 买家 vs 卖家的详情个性化；浏览量自增落库；认证前置（401 / `USER_CERTIFICATION_REQUIRED` / `USER_DISABLED`）；图片数量、重复、他人文件、类型不符、文件不存在、`campusId` 契约外字段；分类 404/一级/停用，以及分类停用后不能上架；金额与文本边界；编辑的全量替换（逐字段断言「省略即 400」「显式 null 即 400」，唯有 `originalPrice` 可置 null 清除；版本冲突 409；图片整体替换与解绑）；状态机 409；删除只改状态；草稿可见性；非卖家 403 与不可见 404；管理端强制下架 + 审计 + 锁定后不可改不可重上架；我的发布与搜索过滤。
 - `FavoriteFlowTests`（5 个用例）：跨用户闭环（不能收藏自己 409、收藏他人出现在列表、取消后消失、计数幂等且不为负）；收藏列表倒序与分页；草稿/已删除/不存在 404；收藏类接口匿名 401（含 `favorite-status` 的安全回归断言）；禁用账号 403。
 - 测试用 `code` 派生 openid（测试 profile 的 `app.wechat.mock-openid` 为空），因此跨用户场景是真实多用户，不是单用户近似。
 
@@ -94,10 +94,7 @@ DB_IT_USERNAME=<user> DB_IT_PASSWORD=<pwd> ./mvnw -B test -Dtest=ItemApiFlowTest
 
 ## 6. 已知残留与未覆盖
 
-1. **契约自相矛盾（`PUT /items/{id}`）——已按宽容语义实现，请负责人裁决**：
-   - `openapi.yaml:874`（路径级 description）：「本接口为全量替换，必须携带当前 `version`；版本不匹配返回 `ITEM_NOT_EDITABLE`。」
-   - `openapi.yaml:3068`（`UpdateItemRequest` schema description）：「只允许修改 `DRAFT` 或 `OFF_SHELF` 商品；**字段省略表示保留原值**」。
-   - 本实现取后者：缺字段 = 保留原值；显式 `null` 只在 `originalPrice` 上表示清除，其余字段显式 `null` 按 400 拒绝（避免用 `null` 绕过必填）；`version` 必填且不匹配 409 `ITEM_NOT_EDITABLE`。测试按此语义编写。
+1. **契约自相矛盾（`PUT /items/{id}`）——已由负责人裁定为「全量替换」并落地**，见 §10：原先路径级描述称「全量替换」、`UpdateItemRequest` 描述称「字段省略表示保留原值」，本实现曾取后者。现按裁定取全量替换，契约、总纲、实现、测试与前端服务层的实际调用方式一致，矛盾消除。
 2. **`GET /admin/items`（`listAdminItems`）未实现**：契约 `openapi.yaml:2000-2005`，`x-owner-task: BE-10`，按分工属 BE-MVP-03，本里程碑不落。
 3. **管理端强制下架未创建卖家通知**：契约要求通知卖家，通知能力属 BE-09，未实现；审计已写。
 4. **`CATEGORY_IN_USE` 现在可构造**（BE-MVP-01 的残留）：`items` 已有真实商品，分类停用时的在售校验可被真实数据覆盖；本任务的测试未专门断言该路径。
@@ -177,10 +174,53 @@ IT_RUN=mvp02 node item-chain.js
 3. 在 `ON_SALE` 状态直接编辑、直接删除 → 409 `ITEM_NOT_EDITABLE`，与契约「只有 `DRAFT`/`OFF_SHELF`
    可编辑可删除」一致，属脚本用错状态。
 
-**待负责人裁决的残留（属前端）**：`services/item-api.js` 的 `buildWriteBody` 固定生成
-`title`/`description`/`price`/`condition`/`categoryId`/`imageFileIds` 全部键，因此经前端服务层
-**无法表达契约允许的「省略字段即保留原值」**——缺省会被补齐成 `null` 或空数组并被后端拒绝。
-真实 UI 始终提交完整表单，当前不可见；是否让服务层支持真正的局部更新，请负责人定。
+**原「待负责人裁决的残留（属前端）」已随 §10 的裁定消失**：`services/item-api.js` 的 `buildWriteBody`
+固定生成 `title`/`description`/`price`/`condition`/`categoryId`/`imageFileIds` 全部键，这在旧语义下
+「无法表达省略即保留」；全量替换成为契约后，这种「总是发全量」的行为正是契约要求，前端无需改动。
 
 **顺带修复的仓库卫生**：`app.file.storage-root` 默认 `./var/media`，`FileProperties` 已注明
 「不纳入版本控制」，但 `.gitignore` 没有对应规则，联调上传的图片成了未跟踪文件；已补 `/var/`。
+
+---
+
+## 10. 契约裁定落地：`PUT /items/{id}` 全量替换（2026-09-12）
+
+§6 遗留 1 的契约矛盾由项目负责人在本日裁定为**全量替换**，并按 §4 变更流程（先总纲、再契约）
+与本仓既有约定完成落地。**这是本 PR 内唯一一处契约变更**，此前「本 PR 未修改 `openapi.yaml`」
+的说法自本节起不再成立。
+
+改动清单（按变更流程顺序）：
+
+| 顺序 | 文件 | 改动 |
+| --- | --- | --- |
+| 1 | `项目全局规划.md`（§8.6 修改商品） | 负责人授权后补入全量替换语义：`version` 与全部业务字段必填，省略或显式 `null` 一律校验失败，`originalPrice` 例外可为 `null` 表示清除原价 |
+| 2 | `openapi.yaml` | `put:` 路径描述改为「必须携带 `version` 与全部业务字段；字段缺失或为 `null` 返回 `VALIDATION_ERROR`」；`UpdateItemRequest` 的 `required` 由 `[version]` 扩为全部 8 个字段，schema 描述同步 |
+| 3 | `UpdateItemRequest.java` | 由「8 个字段逐个探测是否出现」改为声明式必填；保留 `originalPrice` 的存在性标记（见下） |
+| 4 | `ItemApplicationService.update` | 删去 7 处 `hasXxx()` 分支，字段直读；图片不再有「未提供则不动」的分支，总是整体替换 |
+| 5 | `ItemController.update` | 方法注释同步 |
+| 6 | `ItemApiFlowTests` | 编辑用例重写为 `updateIsFullReplacement`；其余 5 处期望 403/409 的 `PUT` 改为完整合法请求体 |
+| 7 | `docs/api/contract-decisions.md` | 新增 §3.1 裁定记录 |
+
+两个非显然的实现要点：
+
+- **`originalPrice` 需要单独的存在性校验**。契约要求它「必填但可为 null」，而 Jakarta Bean Validation
+  只看得见值、看不见「键是否存在」：record 或纯声明式写法下，省略该键与显式传 `null` 无法区分，
+  会把「客户端漏传」静默解释成「清除原价」。因此本 DTO 保持为 class，用 `@JsonSetter` 打一个
+  `originalPriceProvided` 标记，由 `@AssertTrue` 拦成 400。其余 7 个字段由声明式校验承担，
+  不再有任何「是否出现」的探测。
+  校验注解统一写在 getter 上：Bean Validation 不允许同一个类混用字段访问与属性访问。
+- **所有期望 403/409 的 `PUT` 都必须携带完整合法请求体**。Bean Validation 在控制器方法之前触发，
+  半截请求体会先得到 400，永远走不到归属/状态/版本检查。测试里这几个用例的请求体因此改为
+  完整字段 + 从库中取真实 `version`（`ItemTestSupport.itemVersion`），使 409 只可能来自被断言的那条分支，
+  断言强度比原来更高。新增两个脚手架方法：`itemVersion`、`firstImageFileId`（都在 `ItemTestSupport`）。
+
+验证（真实 MySQL，`graduation_mvp_it`，`DDL auto=validate`，V1～V6 重放）：
+
+| 命令 | 结果 |
+| --- | --- |
+| `scripts/validate-openapi.ps1` | **EXIT 0**，51 个操作全部通过结构与一致性校验 |
+| `DB_IT_USERNAME=<user> DB_IT_PASSWORD=<pwd> ./mvnw -B test -Dspring-boot.repackage.skip=true` | **36/36 全绿**（`BackendApplicationTests` 2 + `CoreApiFlowTests` 14 + `ItemApiFlowTests` 15 + `FavoriteFlowTests` 5），EXIT 0 |
+
+未做：真实前后端联调未重跑。`item-chain.js` 的请求体经 `item-form.buildPayload` 组装、**本来就是全量**，
+新旧语义下都应通过；要验证新 jar 需先用它重启 8080（该端口由负责人保持运行，重启需负责人授权）。
+

@@ -7,8 +7,11 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,8 +31,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>覆盖主链路与边界：认证前置、校区自动绑定、图片 1~9 张与归属校验、二级分类校验、
  * 版本冲突、状态机、管理员强制下架与审计、搜索过滤。
  *
- * <p>编辑语义按契约中更宽容的那一处（{@code openapi.yaml:3068}「字段省略表示保留原值」）实现，
- * 因此这里断言「只带 version 的 PUT 保留全部原值」「显式 null 仅 originalPrice 有意义」。
+ * <p>编辑语义按契约的全量替换定义（{@code openapi.yaml} 的 {@code UpdateItemRequest.required}
+ * 含全部业务字段）：{@code version} 与全部业务字段必填，省略或显式 {@code null} 一律 400，
+ * 唯一例外是 {@code originalPrice} 可传 {@code null} 表示清除原价。
  */
 @EnabledIf("databaseConfigured")
 class ItemApiFlowTests extends ItemTestSupport {
@@ -363,8 +367,8 @@ class ItemApiFlowTests extends ItemTestSupport {
     // ------------------------------------------------------------------
 
     @Test
-    @DisplayName("省略字段保留原值、显式 null 只对原价有效、version 不匹配 409")
-    void updateFollowsOmittedFieldsSemantics() throws Exception {
+    @DisplayName("全量替换：字段省略或显式 null 一律 400、原价可置 null 清除、version 不匹配 409")
+    void updateIsFullReplacement() throws Exception {
         String seller = certifiedToken("item-edit-seller");
         String categoryId = enabledSecondLevelCategoryId();
         String image = uploadItemImage(seller);
@@ -372,77 +376,75 @@ class ItemApiFlowTests extends ItemTestSupport {
         String itemId = readString(created, "$.data.id");
         int version = readInt(created, "$.data.version");
 
-        // 只带 version：其余字段全部保持原值。
-        MvcResult untouched = mockMvc.perform(put("/api/v1/items/{id}", itemId)
+        Map<String, String> fields = updateFields(String.valueOf(version), "可编辑商品", "200.00", "300.00",
+                categoryId, List.of(image));
+
+        // 全量替换：每个业务字段都真正必填——省略任一字段都是 400，而不是「保留原值」。
+        // 包含 originalPrice：它允许为 null，但「键缺失」与「显式 null」是两件事，前者 400（见下方清除用例）。
+        for (String omitted : List.copyOf(fields.keySet())) {
+            Map<String, String> body = new LinkedHashMap<>(fields);
+            body.remove(omitted);
+            mockMvc.perform(put("/api/v1/items/{id}", itemId)
+                            .header(AUTHORIZATION, bearer(seller))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(body)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+        }
+
+        // 显式 null 同样非法（不能靠 null 绕过必填）；唯一例外是 originalPrice。
+        for (String nulled : List.of("title", "description", "price", "condition", "categoryId", "imageFileIds")) {
+            Map<String, String> body = new LinkedHashMap<>(fields);
+            body.put(nulled, "null");
+            mockMvc.perform(put("/api/v1/items/{id}", itemId)
+                            .header(AUTHORIZATION, bearer(seller))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json(body)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+        }
+
+        // 原价显式 null：清除原价，其余字段按请求体写入。
+        Map<String, String> clearBody = new LinkedHashMap<>(fields);
+        clearBody.put("title", "\"改过的标题\"");
+        clearBody.put("price", "\"188.00\"");
+        clearBody.put("originalPrice", "null");
+        MvcResult cleared = mockMvc.perform(put("/api/v1/items/{id}", itemId)
                         .header(AUTHORIZATION, bearer(seller))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":" + version + "}"))
+                        .content(json(clearBody)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.title").value("可编辑商品"))
-                .andExpect(jsonPath("$.data.price").value("200.00"))
-                .andExpect(jsonPath("$.data.originalPrice").value("300.00"))
+                .andExpect(jsonPath("$.data.title").value("改过的标题"))
+                .andExpect(jsonPath("$.data.price").value("188.00"))
+                .andExpect(jsonPath("$.data.originalPrice").value(nullValue()))
+                .andExpect(jsonPath("$.data.description").value(VALID_DESCRIPTION))
                 .andExpect(jsonPath("$.data.condition").value("GOOD"))
                 .andExpect(jsonPath("$.data.category.id").value(categoryId))
                 .andExpect(jsonPath("$.data.images", hasSize(1)))
                 .andExpect(jsonPath("$.data.images[0].fileId").value(image))
                 .andReturn();
-        int afterNoop = readInt(untouched.getResponse().getContentAsString(), "$.data.version");
-        assertThat(afterNoop).isGreaterThan(version);
-
-        // 部分字段更新：只改标题，价格与原价不动。
-        MvcResult partiallyUpdated = mockMvc.perform(put("/api/v1/items/{id}", itemId)
-                        .header(AUTHORIZATION, bearer(seller))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":" + afterNoop + ",\"title\":\"改过的标题\",\"price\":\"188.00\"}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.title").value("改过的标题"))
-                .andExpect(jsonPath("$.data.price").value("188.00"))
-                .andExpect(jsonPath("$.data.originalPrice").value("300.00"))
-                .andReturn();
-        int afterUpdate = readInt(partiallyUpdated.getResponse().getContentAsString(), "$.data.version");
-
-        // 显式 null 的 originalPrice 表示清除。
-        MvcResult cleared = mockMvc.perform(put("/api/v1/items/{id}", itemId)
-                        .header(AUTHORIZATION, bearer(seller))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":" + afterUpdate + ",\"originalPrice\":null}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.originalPrice").value(nullValue()))
-                .andExpect(jsonPath("$.data.price").value("188.00"))
-                .andExpect(jsonPath("$.data.title").value("改过的标题"))
-                .andReturn();
         int afterClear = readInt(cleared.getResponse().getContentAsString(), "$.data.version");
-
-        // 其余字段显式 null 一律 400（不能靠 null 绕过必填）。
-        mockMvc.perform(put("/api/v1/items/{id}", itemId)
-                        .header(AUTHORIZATION, bearer(seller))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":" + afterClear + ",\"title\":null}"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
-
-        // 缺 version。
-        mockMvc.perform(put("/api/v1/items/{id}", itemId)
-                        .header(AUTHORIZATION, bearer(seller))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"title\":\"另一个标题\"}"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+        assertThat(afterClear).isGreaterThan(version);
 
         // 版本落后于库中值：409 ITEM_NOT_EDITABLE，而不是乐观锁 500。
+        // 请求体是完整合法的，所以 409 只可能来自版本比对。
+        Map<String, String> staleBody = new LinkedHashMap<>(fields);
+        staleBody.put("version", "99999");
         mockMvc.perform(put("/api/v1/items/{id}", itemId)
                         .header(AUTHORIZATION, bearer(seller))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":99999,\"title\":\"过期版本\"}"))
+                        .content(json(staleBody)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("ITEM_NOT_EDITABLE"));
 
-        // 图片替换：新图绑定、sortNo 从 1 重新开始、被移除的图解绑。
+        // 图片整体替换：新图绑定、sortNo 从 1 重新开始、被移除的图解绑。
         String replacement = uploadItemImage(seller);
+        Map<String, String> replaceBody = updateFields(String.valueOf(afterClear), "改过的标题", "188.00", null,
+                categoryId, List.of(replacement));
         MvcResult replaced = mockMvc.perform(put("/api/v1/items/{id}", itemId)
                         .header(AUTHORIZATION, bearer(seller))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":" + afterClear + ",\"imageFileIds\":[" + replacement + "]}"))
+                        .content(json(replaceBody)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.images", hasSize(1)))
                 .andExpect(jsonPath("$.data.images[0].fileId").value(replacement))
@@ -455,20 +457,48 @@ class ItemApiFlowTests extends ItemTestSupport {
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM item_images WHERE item_id = ?",
                 Integer.class, Long.valueOf(itemId))).isEqualTo(1);
 
-        // 只传图片列表（省略其它字段）同样保留原值。
+        // 多图替换：顺序即 sortNo，请求体里的其它字段照常生效。
         int afterReplace = readInt(replaced.getResponse().getContentAsString(), "$.data.version");
+        String secondImage = uploadItemImage(seller);
+        Map<String, String> twoImages = updateFields(String.valueOf(afterReplace), "两张图", "55.00", "80.00",
+                categoryId, List.of(replacement, secondImage));
         mockMvc.perform(put("/api/v1/items/{id}", itemId)
                         .header(AUTHORIZATION, bearer(seller))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":" + afterReplace + ",\"imageFileIds\":["
-                                + uploadItemImage(seller) + "," + uploadItemImage(seller) + "]}"))
+                        .content(json(twoImages)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.title").value("改过的标题"))
-                .andExpect(jsonPath("$.data.price").value("188.00"))
-                .andExpect(jsonPath("$.data.originalPrice").value(nullValue()))
+                .andExpect(jsonPath("$.data.title").value("两张图"))
+                .andExpect(jsonPath("$.data.price").value("55.00"))
+                .andExpect(jsonPath("$.data.originalPrice").value("80.00"))
                 .andExpect(jsonPath("$.data.images", hasSize(2)))
+                .andExpect(jsonPath("$.data.images[0].fileId").value(replacement))
                 .andExpect(jsonPath("$.data.images[0].sortNo").value(1))
+                .andExpect(jsonPath("$.data.images[1].fileId").value(secondImage))
                 .andExpect(jsonPath("$.data.images[1].sortNo").value(2));
+    }
+
+    /**
+     * 全量替换的请求体字段表，值是「已经是 JSON 字面量的字符串」。
+     * 调用方 {@code remove} 某个键即构造「字段省略」负例，{@code put} 成 {@code "null"} 即构造「显式 null」负例。
+     */
+    private Map<String, String> updateFields(String version, String title, String price, String originalPrice,
+                                            String categoryId, List<String> fileIds) {
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("version", version);
+        fields.put("title", "\"" + title + "\"");
+        fields.put("description", "\"" + VALID_DESCRIPTION + "\"");
+        fields.put("price", "\"" + price + "\"");
+        fields.put("originalPrice", originalPrice == null ? "null" : "\"" + originalPrice + "\"");
+        fields.put("condition", "\"GOOD\"");
+        fields.put("categoryId", categoryId);
+        fields.put("imageFileIds", "[" + String.join(",", fileIds) + "]");
+        return fields;
+    }
+
+    private static String json(Map<String, String> fields) {
+        return fields.entrySet().stream()
+                .map(entry -> "\"" + entry.getKey() + "\":" + entry.getValue())
+                .collect(Collectors.joining(",", "{", "}"));
     }
 
     @Test
@@ -477,10 +507,15 @@ class ItemApiFlowTests extends ItemTestSupport {
         String seller = certifiedToken("item-status-seller");
         String itemId = publishDraft(seller, "状态机商品", "88.00");
 
+        // 请求体完整合法（版本也用库中真实值），所以 409 只可能来自状态机。
+        String onSaleImage = firstImageFileId(itemId);
+        String onSaleCategory = enabledSecondLevelCategoryId();
+
         mockMvc.perform(put("/api/v1/items/{id}", itemId)
                         .header(AUTHORIZATION, bearer(seller))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":1,\"title\":\"在售改标题\"}"))
+                        .content(json(updateFields(itemVersion(itemId), "在售改标题", "88.00", null,
+                                onSaleCategory, List.of(onSaleImage)))))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("ITEM_NOT_EDITABLE"));
 
@@ -506,7 +541,8 @@ class ItemApiFlowTests extends ItemTestSupport {
         mockMvc.perform(put("/api/v1/items/{id}", itemId)
                         .header(AUTHORIZATION, bearer(seller))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":" + version + ",\"title\":\"下架后可改\"}"))
+                        .content(json(updateFields(String.valueOf(version), "下架后可改", "88.00", null,
+                                onSaleCategory, List.of(onSaleImage)))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.title").value("下架后可改"))
                 .andExpect(jsonPath("$.data.status").value("OFF_SHELF"));
@@ -554,11 +590,12 @@ class ItemApiFlowTests extends ItemTestSupport {
         mockMvc.perform(get("/api/v1/items").param("keyword", title))
                 .andExpect(jsonPath("$.data.totalElements").value(0));
 
-        // 删除后不能再次编辑。
+        // 删除后不能再次编辑（请求体完整合法且版本取自库中值，409 只可能来自状态机）。
         mockMvc.perform(put("/api/v1/items/{id}", itemId)
                         .header(AUTHORIZATION, bearer(seller))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":1,\"title\":\"删除后编辑\"}"))
+                        .content(json(updateFields(itemVersion(itemId), "删除后编辑", "66.00", null,
+                                categoryId, List.of(firstImageFileId(itemId))))))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("ITEM_NOT_EDITABLE"));
 
@@ -607,10 +644,12 @@ class ItemApiFlowTests extends ItemTestSupport {
         String intruder = certifiedToken("item-owner-intruder");
         String itemId = publishDraft(seller, "归属校验商品", "150.00");
 
+        // 请求体完整合法，因此 403 只可能来自归属校验（校验先于版本与状态检查）。
         mockMvc.perform(put("/api/v1/items/{id}", itemId)
                         .header(AUTHORIZATION, bearer(intruder))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":1,\"title\":\"越权修改\"}"))
+                        .content(json(updateFields(itemVersion(itemId), "越权修改", "150.00", null,
+                                enabledSecondLevelCategoryId(), List.of(firstImageFileId(itemId))))))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("AUTH_FORBIDDEN"));
 
@@ -685,6 +724,8 @@ class ItemApiFlowTests extends ItemTestSupport {
                 .andExpect(jsonPath("$.data.favorited").value(nullValue()))
                 .andReturn();
         int version = readInt(result.getResponse().getContentAsString(), "$.data.version");
+        // 写响应回显的 version 必须与库中一致（刷盘回显回归），否则客户端拿它编辑会立刻 409。
+        assertThat(version).isEqualTo(Integer.parseInt(itemVersion(itemId)));
 
         // 审计落库，且带上原因。
         assertThat(jdbcTemplate.queryForObject(
@@ -695,10 +736,12 @@ class ItemApiFlowTests extends ItemTestSupport {
                 String.class, "ITEM_ADMIN_OFF_SHELF", Long.valueOf(itemId))).contains("违规下架处理");
 
         // 锁定后卖家不能修改、不能重上架；但契约只禁止「修改或重上架」，删除仍允许。
+        // 请求体完整合法且版本取自库中值，所以 409 只可能来自 adminLock。
         mockMvc.perform(put("/api/v1/items/{id}", itemId)
                         .header(AUTHORIZATION, bearer(seller))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":" + version + ",\"title\":\"锁定后修改\"}"))
+                        .content(json(updateFields(itemVersion(itemId), "锁定后修改", "520.00", null,
+                                enabledSecondLevelCategoryId(), List.of(firstImageFileId(itemId))))))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("ITEM_NOT_EDITABLE"));
 

@@ -16,7 +16,6 @@ import com.graduation.backend.item.api.dto.CreateItemRequest;
 import com.graduation.backend.item.api.dto.ItemDetailResponse;
 import com.graduation.backend.item.api.dto.UpdateItemRequest;
 import com.graduation.backend.item.domain.Item;
-import com.graduation.backend.item.domain.ItemCondition;
 import com.graduation.backend.item.domain.ItemImage;
 import com.graduation.backend.item.domain.ItemImageRepository;
 import com.graduation.backend.item.domain.ItemPermissionService;
@@ -116,7 +115,7 @@ public class ItemApplicationService {
         return itemQueryService.assemble(item, Optional.of(ItemViewerResolver.Viewer.of(seller)));
     }
 
-    /** 修改：字段省略即保留原值，显式 null 仅对 {@code originalPrice} 有意义（清除原价）。 */
+    /** 修改：全量替换，请求体带齐全部业务字段，图片整体替换（{@code originalPrice} 可为 null 表示清除）。 */
     @Transactional
     public ItemDetailResponse update(Long userId, Long itemId, UpdateItemRequest request) {
         User seller = userService.requireActiveUser(userId);
@@ -124,23 +123,15 @@ public class ItemApplicationService {
         permissionService.requireSeller(item, seller.getId(), seller.isAdmin());
         requireVersion(item, request.getVersion());
 
-        String title = request.hasTitle() ? request.getTitle() : item.getTitle();
-        String description = request.hasDescription() ? request.getDescription() : item.getDescription();
-        BigDecimal price = request.hasPrice() ? Money.parse(request.getPrice(), "price") : item.getPrice();
-        BigDecimal originalPrice = request.hasOriginalPrice()
-                ? Money.parseOptional(request.getOriginalPrice(), "originalPrice")
-                : item.getOriginalPrice();
-        ItemCondition condition = request.hasCondition() ? request.getCondition() : item.getConditionLevel();
-        Long categoryId = request.hasCategoryId()
-                ? requireRequestedSecondLevel(request.getCategoryId()).getId()
-                : item.getCategoryId();
+        BigDecimal price = Money.parse(request.getPrice(), "price");
+        BigDecimal originalPrice = Money.parseOptional(request.getOriginalPrice(), "originalPrice");
         requireOriginalPriceNotBelow(price, originalPrice);
+        Long categoryId = requireRequestedSecondLevel(request.getCategoryId()).getId();
 
         Instant now = clock.instant();
-        item.update(title, description, price, originalPrice, condition, categoryId, now);
-        if (request.hasImageFileIds()) {
-            replaceImages(item, requireDistinctFileIds(request.getImageFileIds()), seller.getId(), now);
-        }
+        item.update(request.getTitle(), request.getDescription(), price, originalPrice,
+                request.getCondition(), categoryId, now);
+        replaceImages(item, requireDistinctFileIds(request.getImageFileIds()), seller.getId(), now);
 
         return assembleAfterFlush(item, Optional.of(ItemViewerResolver.Viewer.of(seller)));
     }

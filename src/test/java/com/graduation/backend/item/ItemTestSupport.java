@@ -123,6 +123,19 @@ public abstract class ItemTestSupport extends RealMySqlTestBase {
         return prefix + UUID.randomUUID().toString().substring(0, 8);
     }
 
+    /** 商品当前首图 fileId，用于构造全量替换的编辑请求体。 */
+    protected String firstImageFileId(String itemId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT file_object_id FROM item_images WHERE item_id = ? ORDER BY sort_no LIMIT 1",
+                String.class, Long.valueOf(itemId));
+    }
+
+    /** 商品当前 `version`，用于让编辑请求通过版本校验（而去验证别的分支）。 */
+    protected String itemVersion(String itemId) {
+        return jdbcTemplate.queryForObject("SELECT version FROM items WHERE id = ?",
+                String.class, Long.valueOf(itemId));
+    }
+
     protected String enabledSecondLevelCategoryId() {
         return jdbcTemplate.queryForObject(
                 "SELECT id FROM categories WHERE parent_id IS NOT NULL AND status = 'ENABLED' ORDER BY id LIMIT 1",

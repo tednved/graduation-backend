@@ -212,6 +212,21 @@
 
 这些规则已经同步到 `openapi.yaml` 和总纲 v2.7。
 
+### 3.1 `PUT /items/{id}` 为全量替换（2026-09-12 裁定）
+
+项目负责人裁定：修改商品是**全量替换**，不采用「字段省略表示保留原值」。
+
+- `version` 与全部业务字段（`title`、`description`、`price`、`originalPrice`、`condition`、`categoryId`、`imageFileIds`）必填；字段省略或显式 `null` 一律 400 `VALIDATION_ERROR`。
+- 唯一例外是 `originalPrice`：允许显式 `null`（表示清除原价），但**键必须出现**——「键缺失」与「显式 null」是两件事，前者 400。
+- 图片随请求整体替换，不存在「不带 `imageFileIds` 就不动图片」的分支。
+
+背景：契约此前自相矛盾——路径级描述称「本接口为全量替换」，而 `UpdateItemRequest` 的 schema 描述称「字段省略表示保留原值」。前端服务层 `services/item-api.js` 的 `buildWriteBody` 与发布页 `pages/publish/item-form.js` 的 `buildPayload` 只能全量提交，故按全量替换对齐，矛盾消除。
+
+实现后果：Bean Validation 在控制器方法之前触发，因此**所有期望 403/409 的 `PUT` 都必须携带完整合法请求体**，否则会先拿到 400。`ItemApiFlowTests` 已按此调整，并逐个字段断言「省略即 400」。
+
+已同步：总纲 §8.6（修改商品）、`openapi.yaml`（`put:` 描述与 `UpdateItemRequest` 的 `required`/描述）、后端实现与测试。
+依据：§8.6；§4 变更流程第 1 条（先改总纲，再改契约）。
+
 ---
 
 ## 4. 变更流程

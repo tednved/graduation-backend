@@ -1,46 +1,48 @@
 package com.graduation.backend.item.api.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonSetter;
 import com.graduation.backend.item.domain.ItemCondition;
 import com.graduation.backend.item.domain.Money;
 import jakarta.validation.constraints.AssertTrue;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 
 import java.util.List;
-import java.util.regex.Pattern;
 
 /**
- * 修改商品。全量替换：字段省略表示保留原值。
+ * 修改商品（全量替换）。
  *
- * <p>不用 record：需要区分「字段未出现」与「显式 null」。除 {@code originalPrice} 外，
- * 显式 null 都是无意义的（{@code originalPrice} 显式 null 表示清除原价），由
- * {@link #isFieldsAcceptable()} 统一拦成 400，而不是把 null 当成「保留原值」悄悄忽略。
+ * <p>契约把本接口定义为全量替换（{@code openapi.yaml} 的 {@code UpdateItemRequest.required}
+ * 含全部业务字段）：{@code version} 与全部业务字段均必填，字段省略或显式 {@code null}
+ * 一律 400 {@code VALIDATION_ERROR}，不保留原值。
  *
- * <p>长度/格式不在字段上写注解：未出现的字段值是 null，字段级注解会误报必填；
- * 改为「只在出现时校验」的 {@code @AssertTrue} 方法。值不做 trim，保证「校验的值」
- * 与「落库的值」完全一致。
+ * <p>唯一的例外是 {@code originalPrice}：允许为 {@code null}（表示清除原价），
+ * 但**必须出现在请求体里**——JSON 里「键缺失」与「显式 null」是两件事，前者是非法请求。
+ * 这个区别只能靠 {@link #setOriginalPrice} 打的存在标记拿到，所以本类不是 record；
+ * 其余字段的必填由声明式校验完成，不再有「字段是否出现」的探测。
  *
- * <p>{@code version} 必填，必须与商品当前版本一致，否则 409 {@code ITEM_NOT_EDITABLE}。
+ * <p>长度/格式注解在 getter 而不是字段上：本类含一个 {@code @AssertTrue} 存在性校验，
+ * Bean Validation 不允许同一类混用字段访问与属性访问。值不做 trim，
+ * 保证「校验的值」与「落库的值」完全一致。
+ *
+ * <p>{@code version} 必填，必须等于商品当前版本，否则 409 {@code ITEM_NOT_EDITABLE}。
  */
 public class UpdateItemRequest {
 
-    private static final Pattern MONEY = Pattern.compile(Money.PATTERN_STR);
-
     private Integer version;
     private String title;
-    private boolean titleProvided;
     private String description;
-    private boolean descriptionProvided;
     private String price;
-    private boolean priceProvided;
     private String originalPrice;
-    private boolean originalPriceProvided;
     private ItemCondition condition;
-    private boolean conditionProvided;
     private Long categoryId;
-    private boolean categoryIdProvided;
     private List<Long> imageFileIds;
-    private boolean imageFileIdsProvided;
+    private boolean originalPriceProvided;
 
     @JsonSetter("version")
     public void setVersion(Integer version) {
@@ -50,19 +52,16 @@ public class UpdateItemRequest {
     @JsonSetter("title")
     public void setTitle(String title) {
         this.title = title;
-        this.titleProvided = true;
     }
 
     @JsonSetter("description")
     public void setDescription(String description) {
         this.description = description;
-        this.descriptionProvided = true;
     }
 
     @JsonSetter("price")
     public void setPrice(String price) {
         this.price = price;
-        this.priceProvided = true;
     }
 
     @JsonSetter("originalPrice")
@@ -74,138 +73,68 @@ public class UpdateItemRequest {
     @JsonSetter("condition")
     public void setCondition(ItemCondition condition) {
         this.condition = condition;
-        this.conditionProvided = true;
     }
 
     @JsonSetter("categoryId")
     public void setCategoryId(Long categoryId) {
         this.categoryId = categoryId;
-        this.categoryIdProvided = true;
     }
 
     @JsonSetter("imageFileIds")
     public void setImageFileIds(List<Long> imageFileIds) {
         this.imageFileIds = imageFileIds;
-        this.imageFileIdsProvided = true;
-    }
-
-    /** 除可清除的 {@code originalPrice} 外，任何「出现了但为 null」的字段都判为非法。 */
-    @AssertTrue(message = "字段不能显式置为 null，省略表示保留原值")
-    public boolean isFieldsAcceptable() {
-        if (titleProvided && title == null) {
-            return false;
-        }
-        if (descriptionProvided && description == null) {
-            return false;
-        }
-        if (priceProvided && price == null) {
-            return false;
-        }
-        if (conditionProvided && condition == null) {
-            return false;
-        }
-        if (categoryIdProvided && categoryId == null) {
-            return false;
-        }
-        if (imageFileIdsProvided && imageFileIds == null) {
-            return false;
-        }
-        return !imageFileIdsProvided || !imageFileIds.contains(null);
     }
 
     @NotNull(message = "版本号不能为空")
+    @Min(value = 0, message = "版本号不能为负数")
     public Integer getVersion() {
         return version;
     }
 
-    public boolean hasTitle() {
-        return titleProvided;
-    }
-
+    @NotBlank(message = "标题不能为空")
+    @Size(min = 2, max = 80, message = "标题长度需在 2~80 之间")
     public String getTitle() {
         return title;
     }
 
-    public boolean hasDescription() {
-        return descriptionProvided;
-    }
-
+    @NotBlank(message = "描述不能为空")
+    @Size(min = 10, max = 2000, message = "描述长度需在 10~2000 之间")
     public String getDescription() {
         return description;
     }
 
-    public boolean hasPrice() {
-        return priceProvided;
-    }
-
+    @NotBlank(message = "价格不能为空")
+    @Pattern(regexp = Money.PATTERN_STR, message = "价格必须是两位小数的金额字符串")
     public String getPrice() {
         return price;
     }
 
-    public boolean hasOriginalPrice() {
-        return originalPriceProvided;
-    }
-
-    /** 显式 null 表示清除原价；调用前需用 {@link #hasOriginalPrice()} 判断字段是否出现。 */
+    /** 可为 {@code null}（清除原价），但必须出现；见 {@link #isOriginalPriceProvided()}。 */
+    @Pattern(regexp = Money.PATTERN_STR, message = "原价必须是两位小数的金额字符串")
     public String getOriginalPrice() {
         return originalPrice;
     }
 
-    public boolean hasCondition() {
-        return conditionProvided;
-    }
-
+    @NotNull(message = "商品成色不能为空")
     public ItemCondition getCondition() {
         return condition;
     }
 
-    public boolean hasCategoryId() {
-        return categoryIdProvided;
-    }
-
+    @NotNull(message = "分类不能为空")
     public Long getCategoryId() {
         return categoryId;
     }
 
-    public boolean hasImageFileIds() {
-        return imageFileIdsProvided;
-    }
-
-    public List<Long> getImageFileIds() {
+    @NotEmpty(message = "至少上传一张商品图片")
+    @Size(min = 1, max = 9, message = "商品图片数量需在 1~9 之间")
+    public List<@NotNull(message = "图片 ID 不能为空") Long> getImageFileIds() {
         return imageFileIds;
     }
 
-    @AssertTrue(message = "标题不能为空，且长度需在 2~80 之间")
-    public boolean isTitleAcceptable() {
-        return !titleProvided
-                || (title != null && !title.isBlank() && title.length() >= 2 && title.length() <= 80);
-    }
-
-    @AssertTrue(message = "描述不能为空，且长度需在 10~2000 之间")
-    public boolean isDescriptionAcceptable() {
-        return !descriptionProvided
-                || (description != null && !description.isBlank()
-                    && description.length() >= 10 && description.length() <= 2000);
-    }
-
-    @AssertTrue(message = "价格必须是两位小数的金额字符串")
-    public boolean isPriceAcceptable() {
-        return !priceProvided || (price != null && MONEY.matcher(price).matches());
-    }
-
-    @AssertTrue(message = "原价必须是两位小数的金额字符串")
-    public boolean isOriginalPriceAcceptable() {
-        return !originalPriceProvided || originalPrice == null || MONEY.matcher(originalPrice).matches();
-    }
-
-    @AssertTrue(message = "商品图片数量需在 1~9 之间")
-    public boolean isImageFileIdsAcceptable() {
-        return !imageFileIdsProvided || (imageFileIds != null
-                && imageFileIds.size() >= 1 && imageFileIds.size() <= 9);
-    }
-
-    @AssertTrue(message = "版本号不能为负")
-    public boolean isVersionAcceptable() {
-        return version == null || version >= 0;
+    /** 原价必须出现在请求体里：保留原价请传当前值，清除原价请显式传 {@code null}。 */
+    @JsonIgnore
+    @AssertTrue(message = "原价字段必填：保留原价请传当前值，清除原价请显式传 null")
+    public boolean isOriginalPriceProvided() {
+        return originalPriceProvided;
     }
 }
