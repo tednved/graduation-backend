@@ -8,7 +8,7 @@
 | 分支 | `feat/BE-MVP-02-item-favorite` |
 | 基线 | `origin/main` = `91d2cf9`（BE-MVP-01 合并后；契约 API-01 冻结版 / Flyway V6） |
 | PR | [#6](https://github.com/tednved/graduation-backend/pull/6)（Draft） |
-| 状态 | **IN_PROGRESS** —— 实现完成、`compile` 与 `test-compile` 均 EXIT 0；**测试尚未在真实 MySQL 上执行**（真实库凭据由主线程持有），故本报告不声称测试通过 |
+| 状态 | **IN_PROGRESS** —— 实现与真实库验证均已完成（真实 MySQL 36/36，见 §5/§8）；真实前后端联调 22/22（见 §9）。PR 仍为 Draft，等待负责人验收；不得由 Agent 置 DONE |
 | 契约源 | `backend/openapi.yaml`（本 PR 未修改） |
 
 本任务闭合「发布 → 编辑 → 上下架 → 详情 → 搜索 → 收藏」商品闭环，含管理端强制下架。
@@ -140,3 +140,47 @@ DB_IT_USERNAME=<user> DB_IT_PASSWORD=<pwd> ./mvnw -B test -Dtest=ItemApiFlowTest
 - 分支全量 diff 无口令/密钥/`session_key`；测试与文档只出现 `DB_IT_USERNAME=<user>` 这类占位符。
 
 **遗留**：`./mvnw -B verify` 在负责人保持 8080 实例运行时会在 `spring-boot:repackage` 失败（Windows 无法重命名被占用的 jar），与代码无关；跳过 repackage 后 `BUILD SUCCESS`。真实前后端联调（`item-chain.js`）需要先用新 jar 重启 8080。
+
+---
+
+## 9. 真实前后端联调（2026-09-12）
+
+联调脚本 `item-chain.js` 放在仓库外（`D:\tmp-integration`），不是交付物；它 `require` 前端真实模块
+（`services/*-api.js`、`store/session-store.js`、`constants/enums.js`，以及发布页的
+`pages/publish/item-form.js`），用 `wx-real.js` 顶掉 `global.wx`，对 `127.0.0.1:8080` 打真实 HTTP。
+先用新 jar 重启 8080（已获负责人授权），随后：
+
+```
+IT_RUN=mvp02 node item-chain.js
+```
+
+结果 **22 PASS / 0 FAIL / 1 SKIP，EXIT=0**。
+
+覆盖：登录 → 认证前置（未通过时自行提交并以管理员身份通过）→ 取启用的二级分类 → 上传 `ITEM_IMAGE` →
+创建草稿（MAIN 校区绑定、图片绑定、金额两位小数）→ 草稿本人可见且公开搜索不可见 → 上架 →
+**上架响应回显的 version 与详情回读一致**（刷盘回显回归）→ 下架 →
+**用下架响应的 version 立刻编辑成功且 version 增长**（§8 缺陷 1 的回归）→ 重新上架 →
+关键词搜索命中 → 二级分类筛选命中 → **只传一级分类展开到启用子类并命中** → 匿名详情
+`isOwner=false`/`favorited=null` → 浏览量自增 → 收藏自己商品 409 `ITEM_SELF_OPERATION` → 我的发布 →
+在售不可直接删除、下架后删除 204 → 删除后搜索不再命中。
+
+唯一 SKIP 是跨用户收藏：演示环境把 Mock 登录钉在单一管理员账号，两次登录是同一用户；脚本还会在库里
+找「其他卖家的在售商品」作为替代目标，本次库里没有（商品全属该账号），故如实 SKIP 而非伪造通过。
+该场景由真实 MySQL 用例 `FavoriteFlowTests` 覆盖（测试 profile 的 `mock-openid` 为空，是真实多用户）。
+
+联调中出现的 3 次失败**全部是脚本自身缺陷，不是产品缺陷**，且每次都被后端按契约挡下，反过来印证了契约校验有效：
+
+1. 上传步骤返回的是展示用字符串而不是 `fileId`，`imageFileIds` 传了非 ID 值 → 400 `VALIDATION_ERROR`。
+2. 用「只带 `title`+`version` 的半截请求体」调 `PUT`：前端 `buildWriteBody` 会把缺失字段补齐成
+   `price: null` 与 `imageFileIds: []`，两者都被 `UpdateItemRequest` 判为非法 → 400。真实页面从不这样调用
+   （`publish.js` 先 `validateItemForm` 再 `buildPayload`，始终提交完整表单）；改走同一条真实路径后通过。
+3. 在 `ON_SALE` 状态直接编辑、直接删除 → 409 `ITEM_NOT_EDITABLE`，与契约「只有 `DRAFT`/`OFF_SHELF`
+   可编辑可删除」一致，属脚本用错状态。
+
+**待负责人裁决的残留（属前端）**：`services/item-api.js` 的 `buildWriteBody` 固定生成
+`title`/`description`/`price`/`condition`/`categoryId`/`imageFileIds` 全部键，因此经前端服务层
+**无法表达契约允许的「省略字段即保留原值」**——缺省会被补齐成 `null` 或空数组并被后端拒绝。
+真实 UI 始终提交完整表单，当前不可见；是否让服务层支持真正的局部更新，请负责人定。
+
+**顺带修复的仓库卫生**：`app.file.storage-root` 默认 `./var/media`，`FileProperties` 已注明
+「不纳入版本控制」，但 `.gitignore` 没有对应规则，联调上传的图片成了未跟踪文件；已补 `/var/`。

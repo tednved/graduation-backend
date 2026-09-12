@@ -31,3 +31,7 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### 运行期上传目录 ###
+# app.file.storage-root 默认 ./var/media（见 FileProperties），属运行期产物，不入库。
+/var/
