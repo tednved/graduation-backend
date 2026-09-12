@@ -136,7 +136,7 @@ DB_IT_USERNAME=<user> DB_IT_PASSWORD=<pwd> ./mvnw -B test -Dtest=ItemApiFlowTest
 - 全仓无 `@PreAuthorize`/`hasRole`，管理端越权走应用层 `BusinessException(AUTH_FORBIDDEN)`，与既有约定一致。
 - 分支全量 diff 无口令/密钥/`session_key`；测试与文档只出现 `DB_IT_USERNAME=<user>` 这类占位符。
 
-**遗留**：`./mvnw -B verify` 在负责人保持 8080 实例运行时会在 `spring-boot:repackage` 失败（Windows 无法重命名被占用的 jar），与代码无关；跳过 repackage 后 `BUILD SUCCESS`。真实前后端联调（`item-chain.js`）需要先用新 jar 重启 8080。
+**遗留**：`./mvnw -B verify` 在负责人保持 8080 实例运行时会在 `spring-boot:repackage` 失败（Windows 无法重命名被占用的 jar），与代码无关；跳过 repackage 后 `BUILD SUCCESS`。`clean` 同样会失败（`target/backend-0.0.1-SNAPSHOT.jar` 被运行中的实例占用），因此**正式验收前需先停掉 8080 再跑一次干净构建**；日常增量 `test` 不受影响。另注意 `target/surefire-reports` 会残留已删源码的用例报告（本次发现 `ScratchDumpTests`，其 class 与源码均已不存在），统计用例数时应以本次新生成的报告为准，否则会读成 37 项。
 
 ---
 
@@ -221,6 +221,6 @@ IT_RUN=mvp02 node item-chain.js
 | `scripts/validate-openapi.ps1` | **EXIT 0**，51 个操作全部通过结构与一致性校验 |
 | `DB_IT_USERNAME=<user> DB_IT_PASSWORD=<pwd> ./mvnw -B test -Dspring-boot.repackage.skip=true` | **36/36 全绿**（`BackendApplicationTests` 2 + `CoreApiFlowTests` 14 + `ItemApiFlowTests` 15 + `FavoriteFlowTests` 5），EXIT 0 |
 
-未做：真实前后端联调未重跑。`item-chain.js` 的请求体经 `item-form.buildPayload` 组装、**本来就是全量**，
-新旧语义下都应通过；要验证新 jar 需先用它重启 8080（该端口由负责人保持运行，重启需负责人授权）。
-
+联调未重跑的原因：§9 的 22/22 是在**裁定前的 jar** 上完成的，本次只改契约与实现，
+未重启 8080（该端口由负责人保持运行，重启需负责人授权）。`item-chain.js` 的请求体经
+`item-form.buildPayload` 组装、**本来就是全量字段**，新旧语义下都应通过。
