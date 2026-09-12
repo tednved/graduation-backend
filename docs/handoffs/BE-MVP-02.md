@@ -84,7 +84,7 @@ DB_IT_USERNAME=<user> DB_IT_PASSWORD=<pwd> ./mvnw -B test -Dtest=ItemApiFlowTest
 
 ---
 
-## 5. 测试覆盖（已编写，待真实库执行）
+## 5. 测试覆盖（已在真实库执行，36/36 全绿）
 
 - `ItemApiFlowTests`（15 个用例）：创建/上架/搜索/详情主链路（含 MAIN 校区绑定、`sortNo`、`coverImageUrl`、`allowedActions`）；匿名 vs 买家 vs 卖家的详情个性化；浏览量自增落库；认证前置（401 / `USER_CERTIFICATION_REQUIRED` / `USER_DISABLED`）；图片数量、重复、他人文件、类型不符、文件不存在、`campusId` 契约外字段；分类 404/一级/停用，以及分类停用后不能上架；金额与文本边界；编辑的「省略保留 / 显式 null / 版本冲突 / 图片替换解绑」；状态机 409；删除只改状态；草稿可见性；非卖家 403 与不可见 404；管理端强制下架 + 审计 + 锁定后不可改不可重上架；我的发布与搜索过滤。
 - `FavoriteFlowTests`（5 个用例）：跨用户闭环（不能收藏自己 409、收藏他人出现在列表、取消后消失、计数幂等且不为负）；收藏列表倒序与分页；草稿/已删除/不存在 404；收藏类接口匿名 401（含 `favorite-status` 的安全回归断言）；禁用账号 403。
@@ -101,10 +101,10 @@ DB_IT_USERNAME=<user> DB_IT_PASSWORD=<pwd> ./mvnw -B test -Dtest=ItemApiFlowTest
 2. **`GET /admin/items`（`listAdminItems`）未实现**：契约 `openapi.yaml:2000-2005`，`x-owner-task: BE-10`，按分工属 BE-MVP-03，本里程碑不落。
 3. **管理端强制下架未创建卖家通知**：契约要求通知卖家，通知能力属 BE-09，未实现；审计已写。
 4. **`CATEGORY_IN_USE` 现在可构造**（BE-MVP-01 的残留）：`items` 已有真实商品，分类停用时的在售校验可被真实数据覆盖；本任务的测试未专门断言该路径。
-5. **收藏列表的失效商品呈现**：当前实现会返回 `OFF_SHELF`/`SOLD`/`DELETED` 的收藏项并带上 `status`，由前端呈现「已失效」（与 §10「即时移除、失效状态」一致）。若负责人希望接口层过滤失效商品，需要改 `FavoriteQueryMapper`；测试未固化这一呈现方式，只固化了「收藏关系与计数」。
-6. **可收藏范围**：`requireFavoritableItem` 按「公开可见」判定（即 `OFF_SHELF`/`RESERVED`/`SOLD` 也可收藏，与详情可见性一致），只有 `DRAFT`/`DELETED` 是 404。若希望「仅在售可收藏」，改一处判定即可。
-7. **未执行真实库测试**：本报告只包含编译证据，测试结论待主线程执行后回填。
-8. **`FileObject.markDeleted()` 超出写入范围**（见 §3），需审查确认。
+5. **收藏列表的失效商品呈现——已裁决为「保持现状」**：当前实现会返回 `OFF_SHELF`/`SOLD`/`DELETED` 的收藏项并带上 `status`，由前端呈现「已失效」。`项目全局规划.md:1010` 明确该页的两条交互是「即时移除、失效状态」，因此接口层不做过滤是正确的，不需要改 `FavoriteQueryMapper`。
+6. **可收藏范围——已裁决为「保持现状」**：`requireFavoritableItem` 按「公开可见」判定（`OFF_SHELF`/`RESERVED`/`SOLD` 可收藏），只有 `DRAFT`/`DELETED` 是 404。契约 `openapi.yaml:1106` 的原文是「商品必须存在且非 `DRAFT`/`DELETED`」，与实现一致，不需要收窄到「仅在售」。
+7. **真实库测试已执行（主线程，2026-09-12）**：`./mvnw -B verify` 在真实 MySQL 上 36/36 全绿（`BackendApplicationTests` 2 + `CoreApiFlowTests` 14 + `ItemApiFlowTests` 15 + `FavoriteFlowTests` 5），V1～V6 从空 schema 重放 + `ddl-auto=validate` 通过。首次执行暴露了 4 处缺陷，均已修复，见 §8。
+8. **`FileObject.markDeleted()` 超出写入范围——已审查确认接受**（见 §3）：`FileStatus` 只有 `UPLOADED`/`BOUND`/`DELETED` 三态，`DELETED` 就是契约「解绑进入待清理状态」的唯一落点；若在 `ItemApplicationService` 里直接赋值又会违反「状态变更只走领域方法」。改动 10 行、幂等、不影响其他调用方，接受。
 
 ---
 
@@ -114,3 +114,29 @@ DB_IT_USERNAME=<user> DB_IT_PASSWORD=<pwd> ./mvnw -B test -Dtest=ItemApiFlowTest
 - 订单里程碑注意：`Item` 已提供 `reserve`/`release`/`markSold` 领域方法，`ItemRepository.countInProgressOrders` 已用于删除前置；下单校验请复用 `ItemPermissionService.canBuy`，保持与详情 `canBuy` 一致。
 - 通知里程碑（BE-09）：管理员强制下架处需要补卖家通知，落点见 `ItemApplicationService.adminOffShelf`。
 - 新增受保护接口无需改 `SecurityConfig`；只有契约标注 `security: []` 的读接口才加入 `PUBLIC_GET`，且**必须精确到单段**（`/api/v1/items/*` 而不是 `/api/v1/items/**`，否则 `favorite-status` 会被匿名放行）。
+
+---
+
+## 8. 主线程真实库复核与修复（2026-09-12，提交 `47d7888`）
+
+真实库首跑 `20 errors + 4 failures`，逐个定位后全部修复，现 36/36 全绿。两个是产品缺陷，三个是测试写法缺陷：
+
+**产品缺陷（都会让客户端无法完成第二次写操作）**
+
+1. **写路径回显的是刷盘前的旧 `version`**：`@Version` 由 Hibernate 在 flush 时自增，而提交发生在方法返回之后，`itemQueryService.assemble` 读到的是改动前的值。契约要求编辑必须携带最新 `version`，客户端照做必然吃到 `ITEM_NOT_EDITABLE`（表现为「下架成功后再编辑 409」）。已在 `update`/`publish`/`offShelf`/`adminOffShelf` 回显前显式 flush，收敛成 `assembleAfterFlush`。`create` 不受影响（IDENTITY 插入时已拿到 `version=0`）。
+2. **`item_images.sort_no` 映射缺 JDBC 类型**：库列是 `TINYINT UNSIGNED`，Hibernate 不显式声明时期望 `INTEGER`，`ddl-auto=validate` 直接启动失败（`BackendApplicationTests` 也起不来）。补 `@JdbcTypeCode(SqlTypes.TINYINT)`。
+
+**测试缺陷（断言写法，非实现问题）**
+
+3. `ItemTestSupport.userIdOf` 读 `$.data.userId`，而登录响应把用户摘要嵌在 `user` 里，正确路径是 `$.data.user.id`；该错误让 20 个用例全部在脚手架阶段报错。
+4. Spring 7 的 `JsonPathExpectationsHelper` 对不定路径（含 `[?(@...)]` 过滤器）不再匹配 `.value(List.of(x))`（实测返回 `null`，同内容的 `JsonPath.read` 正常）。三处改为语义等价的 `.value(contains(x))`——`contains` 要求「恰好一个匹配元素」，与 `List.of(x)` 强度相同，未放宽断言。
+
+**复核过的既有约定（无需改动）**
+
+- 计数只走原子 SQL：`ItemRepository` 的 `incrementViewCount`/`incrementFavoriteCount`/`decrementFavoriteCount` 均为 `@Modifying` 原生 SQL，实体上 `viewCount`/`favoriteCount` 标了 `insertable=false, updatable=false`，不会在刷实体时覆盖并发增量。
+- 收藏自己商品是 409 `ITEM_SELF_OPERATION`，已固化断言。
+- `PUBLIC_GET` 精确到单段（`/api/v1/items`、`/api/v1/items/*`），`favorite-status` 保持需要登录。
+- 全仓无 `@PreAuthorize`/`hasRole`，管理端越权走应用层 `BusinessException(AUTH_FORBIDDEN)`，与既有约定一致。
+- 分支全量 diff 无口令/密钥/`session_key`；测试与文档只出现 `DB_IT_USERNAME=<user>` 这类占位符。
+
+**遗留**：`./mvnw -B verify` 在负责人保持 8080 实例运行时会在 `spring-boot:repackage` 失败（Windows 无法重命名被占用的 jar），与代码无关；跳过 repackage 后 `BUILD SUCCESS`。真实前后端联调（`item-chain.js`）需要先用新 jar 重启 8080。
