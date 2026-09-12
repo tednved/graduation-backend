@@ -17,11 +17,12 @@ import org.springframework.context.annotation.Configuration;
 public class WechatClientConfig {
 
     @Bean
-    public WechatClient wechatClient(@Value("${app.wechat.mode:mock}") String mode) {
+    public WechatClient wechatClient(@Value("${app.wechat.mode:mock}") String mode,
+                                     @Value("${app.wechat.mock-openid:}") String mockOpenid) {
         if (!"mock".equalsIgnoreCase(mode)) {
             throw new IllegalStateException(
                     "app.wechat.mode=" + mode + " 尚未实现：当前版本只提供模拟微信登录，请设置 app.wechat.mode=mock");
         }
-        return new MockWechatClient();
+        return new MockWechatClient(mockOpenid);
     }
 }
