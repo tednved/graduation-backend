@@ -142,7 +142,7 @@ public class ItemApplicationService {
             replaceImages(item, requireDistinctFileIds(request.getImageFileIds()), seller.getId(), now);
         }
 
-        return itemQueryService.assemble(item, Optional.of(ItemViewerResolver.Viewer.of(seller)));
+        return assembleAfterFlush(item, Optional.of(ItemViewerResolver.Viewer.of(seller)));
     }
 
     /** 上架：字段完整、至少一张图片、分类与校区启用、认证仍有效、未被管理员锁定。 */
@@ -157,7 +157,7 @@ public class ItemApplicationService {
         }
         item.publish(clock.instant());
 
-        return itemQueryService.assemble(item, Optional.of(ItemViewerResolver.Viewer.of(seller)));
+        return assembleAfterFlush(item, Optional.of(ItemViewerResolver.Viewer.of(seller)));
     }
 
     /** 主动下架：仅 {@code ON_SALE} 可下架。 */
@@ -168,7 +168,7 @@ public class ItemApplicationService {
         permissionService.requireSeller(item, seller.getId(), seller.isAdmin());
         item.offShelf(clock.instant());
 
-        return itemQueryService.assemble(item, Optional.of(ItemViewerResolver.Viewer.of(seller)));
+        return assembleAfterFlush(item, Optional.of(ItemViewerResolver.Viewer.of(seller)));
     }
 
     /** 删除：仅 DRAFT/OFF_SHELF 且无进行中订单；状态改 DELETED，不物理删除。 */
@@ -203,7 +203,7 @@ public class ItemApplicationService {
         auditLogService.record(admin.getId(), "ITEM_ADMIN_OFF_SHELF", "ITEM", item.getId(),
                 Map.of("reason", reason, "sellerId", item.getSellerId(), "status", item.getStatus().name()));
 
-        return itemQueryService.assemble(item, Optional.empty());
+        return assembleAfterFlush(item, Optional.empty());
     }
 
     /** 创建时插入图片行：{@code sortNo} 按请求顺序生成 1..9，客户端不能指定。 */
@@ -329,5 +329,17 @@ public class ItemApplicationService {
     private Item requireItemForUpdate(Long itemId) {
         return itemRepository.findByIdForUpdate(itemId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "商品不存在"));
+    }
+
+    /**
+     * 改动后的回显必须先把实体刷盘。
+     *
+     * <p>{@code @Version} 由 Hibernate 在刷盘时才自增，提交发生在方法返回之后；不显式 flush
+     * 就会把「改动前」的 version 回给客户端，而契约要求编辑携带最新 version——
+     * 客户端下一次编辑必然 {@code ITEM_NOT_EDITABLE}。
+     */
+    private ItemDetailResponse assembleAfterFlush(Item item, Optional<ItemViewerResolver.Viewer> viewer) {
+        itemRepository.flush();
+        return itemQueryService.assemble(item, viewer);
     }
 }

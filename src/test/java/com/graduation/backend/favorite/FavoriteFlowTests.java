@@ -11,6 +11,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -65,7 +66,7 @@ class FavoriteFlowTests extends ItemTestSupport {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(1))
                 .andExpect(jsonPath("$.data.items[?(@.id == '" + itemId + "')].status")
-                        .value(List.of("ON_SALE")));
+                        .value(contains("ON_SALE")));
         mockMvc.perform(get("/api/v1/users/me/favorites").header(AUTHORIZATION, bearer(seller)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[?(@.id == '" + itemId + "')]", hasSize(0)));

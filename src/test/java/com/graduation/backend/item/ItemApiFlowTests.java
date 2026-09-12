@@ -748,14 +748,14 @@ class ItemApiFlowTests extends ItemTestSupport {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[?(@.id == '" + draftId + "')]", hasSize(1)))
                 .andExpect(jsonPath("$.data.items[?(@.id == '" + onSaleId + "')].status")
-                        .value(List.of("ON_SALE")))
+                        .value(contains("ON_SALE")))
                 .andExpect(jsonPath("$.data.items[?(@.id == '" + draftId + "')].version").exists());
 
         mockMvc.perform(get("/api/v1/users/me/items").param("status", "DRAFT").param("size", "100")
                         .header(AUTHORIZATION, bearer(seller)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[?(@.id == '" + draftId + "')].status")
-                        .value(List.of("DRAFT")))
+                        .value(contains("DRAFT")))
                 .andExpect(jsonPath("$.data.items[?(@.id == '" + onSaleId + "')]", hasSize(0)));
 
         // 契约外的状态值按 400 拒绝。

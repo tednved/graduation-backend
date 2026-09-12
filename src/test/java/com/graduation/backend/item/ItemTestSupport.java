@@ -85,7 +85,7 @@ public abstract class ItemTestSupport extends RealMySqlTestBase {
     }
 
     protected String userIdOf(String loginJson) {
-        return readString(loginJson, "$.data.userId");
+        return readString(loginJson, "$.data.user.id");
     }
 
     /** 上传一张 ITEM_IMAGE，返回 fileId。 */

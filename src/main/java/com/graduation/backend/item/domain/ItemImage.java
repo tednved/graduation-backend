@@ -6,6 +6,8 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
 
@@ -32,6 +34,9 @@ public class ItemImage {
     @Column(name = "image_url", nullable = false, length = 500)
     private String imageUrl;
 
+    // 库列是 TINYINT UNSIGNED（1..9），而领域里用 Integer 更自然；
+    // 不显式声明 JDBC 类型时 Hibernate 会期望 INTEGER，ddl-auto=validate 直接启动失败。
+    @JdbcTypeCode(SqlTypes.TINYINT)
     @Column(name = "sort_no", nullable = false)
     private Integer sortNo;
 
