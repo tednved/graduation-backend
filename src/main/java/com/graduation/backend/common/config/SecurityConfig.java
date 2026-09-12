@@ -32,7 +32,13 @@ public class SecurityConfig {
 
     /** 契约里明确匿名可访问的读接口，逐个列出而不是用通配符放宽。 */
     static final String[] PUBLIC_POST = {"/api/v1/auth/wechat-login", "/api/v1/auth/refresh"};
-    static final String[] PUBLIC_GET = {"/api/v1/users/*/public", "/api/v1/categories/tree"};
+    // 商品搜索与详情契约标注 security: []，必须精确到单段：
+    // 写成 /api/v1/items/** 会把 /api/v1/items/{itemId}/favorite-status 也放成匿名可访问。
+    static final String[] PUBLIC_GET = {
+            "/api/v1/users/*/public",
+            "/api/v1/categories/tree",
+            "/api/v1/items",
+            "/api/v1/items/*"};
     static final String[] PUBLIC_ANY = {"/media/**", "/error", "/actuator/health"};
 
     @Bean

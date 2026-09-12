@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.HexFormat;
 
@@ -107,6 +108,46 @@ public class FileService {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR, "该文件已被使用");
         }
         return file;
+    }
+
+    /**
+     * 校验商品图片可用于绑定：必须属于当前用户、业务类型为 ITEM_IMAGE、且仍是 UPLOADED。
+     *
+     * <p>返回实体由调用方在自身事务内完成绑定。已是 BOUND 的文件（例如编辑时重复提交原有图片）
+     * 不能被再次绑定，调用方应先按现有商品图片匹配后再决定是否调用本方法。
+     */
+    @Transactional(readOnly = true)
+    public FileObject requireBindableItemImage(Long fileId, Long ownerId) {
+        FileObject file = fileObjectRepository.findById(fileId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "文件不存在"));
+        if (!file.isOwnedBy(ownerId)) {
+            throw new BusinessException(ErrorCode.FILE_NOT_OWNED, "无权使用该文件");
+        }
+        if (file.getBizType() != FileBizType.ITEM_IMAGE) {
+            throw new BusinessException(ErrorCode.FILE_INVALID_TYPE, "该文件不是商品图片");
+        }
+        if (!file.isAvailable()) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "该文件已被使用");
+        }
+        return file;
+    }
+
+    /** 把商品图片标记 BOUND；同一文件不允许被第二个商品引用。 */
+    public void bindItemImage(FileObject file, Instant now) {
+        requireItemImage(file);
+        file.bind(now);
+    }
+
+    /** 解绑被替换掉的商品图片：进入待清理状态，不再允许被引用。 */
+    public void unbindItemImage(FileObject file) {
+        requireItemImage(file);
+        file.markDeleted();
+    }
+
+    private void requireItemImage(FileObject file) {
+        if (file.getBizType() != FileBizType.ITEM_IMAGE) {
+            throw new BusinessException(ErrorCode.FILE_INVALID_TYPE, "该文件不是商品图片");
+        }
     }
 
     /**

@@ -96,6 +96,16 @@ public class FileObject {
         return status == FileStatus.UPLOADED;
     }
 
+    /**
+     * 解绑后进入待清理状态。
+     *
+     * <p>只保留元数据、不再允许被任何业务对象引用；对象文件本身由后续清理任务处理。
+     * 重复调用是幂等的。
+     */
+    public void markDeleted() {
+        this.status = FileStatus.DELETED;
+    }
+
     public Long getId() {
         return id;
     }

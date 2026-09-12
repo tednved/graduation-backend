@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  收藏列表联表查询：收藏关系 + 商品卡片投影。
+  失效商品（已下架/已售/已删除）仍会返回，由前端按 status 呈现「已失效」，
+  与 §10 决策表「收藏列表：即时移除、失效状态」一致。
+-->
+<mapper namespace="com.graduation.backend.favorite.query.FavoriteQueryMapper">
+
+    <select id="selectFavoriteItems" resultType="com.graduation.backend.item.query.ItemCardRow">
+        SELECT i.id,
+               i.title,
+               i.price,
+               i.original_price,
+               i.condition_level,
+               i.status,
+               (SELECT ii.image_url FROM item_images ii WHERE ii.item_id = i.id
+                ORDER BY ii.sort_no ASC LIMIT 1) AS cover_image_url,
+               i.campus_id,
+               c.name AS campus_name,
+               i.category_id,
+               cat.name AS category_name,
+               i.favorite_count,
+               i.view_count,
+               i.published_at
+        FROM favorites f
+                 JOIN items i ON i.id = f.item_id
+                 LEFT JOIN campuses c ON c.id = i.campus_id
+                 LEFT JOIN categories cat ON cat.id = i.category_id
+        WHERE f.user_id = #{userId}
+        ORDER BY f.created_at DESC, f.id DESC
+    </select>
+
+</mapper>
