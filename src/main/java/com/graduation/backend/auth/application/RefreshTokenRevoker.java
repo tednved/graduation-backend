@@ -33,4 +33,16 @@ public class RefreshTokenRevoker {
         List<RefreshToken> active = repository.findByUserIdAndDeviceIdAndRevokedAtIsNull(userId, deviceId);
         active.forEach(token -> token.revoke(now));
     }
+
+    /**
+     * 撤销该用户全部设备的 Refresh Token，用于管理员禁用账号。
+     *
+     * <p>与重放检测不同，这里要加入调用方的事务：禁用状态、令牌撤销与审计记录必须一起提交，
+     * 不能出现「账号被禁用但旧令牌还能换发 Access Token」的中间态。
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void revokeAllForUser(Long userId) {
+        Instant now = clock.instant();
+        repository.findByUserIdAndRevokedAtIsNull(userId).forEach(token -> token.revoke(now));
+    }
 }

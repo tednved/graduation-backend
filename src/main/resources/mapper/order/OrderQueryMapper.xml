@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  我的订单列表。分页由 PaginationInnerInterceptor 追加 LIMIT，SQL 里不写。
+  买卖视角决定过滤列与「对端」是谁：BUY 时我是买家、对端是卖家；SELL 时相反。
+  两个分支都在 <choose> 里硬编码，避免把调用方字符串拼进列名。
+  商品信息取自 order_snapshots，保证列表显示的是成交时的标题与图。
+-->
+<mapper namespace="com.graduation.backend.order.query.OrderQueryMapper">
+
+    <select id="selectMyOrders" resultType="com.graduation.backend.order.query.OrderSummaryRow">
+        SELECT o.id AS order_id,
+               o.order_no,
+               o.status,
+               o.trade_mode,
+               o.amount,
+               o.item_id,
+               s.item_title,
+               s.item_image_url,
+               s.item_price,
+               u.id AS counterpart_id,
+               u.nickname AS counterpart_nickname,
+               u.avatar_url AS counterpart_avatar_url,
+               o.created_at,
+               o.updated_at
+        FROM orders o
+                 JOIN order_snapshots s ON s.order_id = o.id
+        <choose>
+            <when test="side == 'SELL'">
+                JOIN users u ON u.id = o.buyer_id
+                WHERE o.seller_id = #{userId}
+            </when>
+            <otherwise>
+                JOIN users u ON u.id = o.seller_id
+                WHERE o.buyer_id = #{userId}
+            </otherwise>
+        </choose>
+        <if test="status != null">
+            AND o.status = #{status}
+        </if>
+        ORDER BY o.created_at DESC, o.id DESC
+    </select>
+
+</mapper>

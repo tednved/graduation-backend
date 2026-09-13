@@ -22,8 +22,11 @@ import com.graduation.backend.item.domain.ItemPermissionService;
 import com.graduation.backend.item.domain.ItemRepository;
 import com.graduation.backend.item.domain.ItemStatus;
 import com.graduation.backend.item.domain.Money;
+import com.graduation.backend.notification.application.NotificationMessage;
+import com.graduation.backend.notification.domain.NotificationType;
 import com.graduation.backend.user.application.UserService;
 import com.graduation.backend.user.domain.User;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -67,6 +70,7 @@ public class ItemApplicationService {
     private final CampusRepository campusRepository;
     private final UserService userService;
     private final AuditLogService auditLogService;
+    private final ApplicationEventPublisher eventPublisher;
     private final Clock clock;
 
     public ItemApplicationService(ItemRepository itemRepository,
@@ -79,6 +83,7 @@ public class ItemApplicationService {
                                   CampusRepository campusRepository,
                                   UserService userService,
                                   AuditLogService auditLogService,
+                                  ApplicationEventPublisher eventPublisher,
                                   Clock clock) {
         this.itemRepository = itemRepository;
         this.itemImageRepository = itemImageRepository;
@@ -90,6 +95,7 @@ public class ItemApplicationService {
         this.campusRepository = campusRepository;
         this.userService = userService;
         this.auditLogService = auditLogService;
+        this.eventPublisher = eventPublisher;
         this.clock = clock;
     }
 
@@ -181,7 +187,7 @@ public class ItemApplicationService {
      * 响应按匿名视图组装（{@code allowedActions} 为空数组），避免给管理端返回「可收藏/可购买」这类
      * 与操作者身份无关的动作。
      *
-     * <p>契约还要求「创建卖家通知」，通知能力属于 BE-09 未实现，本次不写通知（已在交接中记录）。
+     * <p>卖家通知只发布事件，由监听器在提交后另起事务落库：下架本身不能被消息写入失败拖累。
      */
     @Transactional
     public ItemDetailResponse adminOffShelf(Long adminId, Long itemId, String reason) {
@@ -193,6 +199,10 @@ public class ItemApplicationService {
         item.adminOffShelf(reason, clock.instant());
         auditLogService.record(admin.getId(), "ITEM_ADMIN_OFF_SHELF", "ITEM", item.getId(),
                 Map.of("reason", reason, "sellerId", item.getSellerId(), "status", item.getStatus().name()));
+        eventPublisher.publishEvent(new NotificationMessage(
+                item.getSellerId(), NotificationType.SYSTEM, "商品被管理员下架",
+                "你的商品「" + item.getTitle() + "」已被管理员下架：" + reason,
+                NotificationMessage.BIZ_TYPE_ITEM, item.getId()));
 
         return assembleAfterFlush(item, Optional.empty());
     }

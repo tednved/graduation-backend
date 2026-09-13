@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  评价查询。分页由 PaginationInnerInterceptor 追加 LIMIT，SQL 里不写。
+  只返回 VISIBLE：状态条件硬编码，不做成参数。
+-->
+<mapper namespace="com.graduation.backend.review.query.ReviewQueryMapper">
+
+    <select id="selectUserReviews" resultType="com.graduation.backend.review.query.ReviewRow">
+        SELECT r.id AS review_id,
+               r.order_id,
+               r.reviewer_id,
+               u.nickname AS reviewer_nickname,
+               u.avatar_url AS reviewer_avatar_url,
+               r.rating,
+               r.content,
+               r.status,
+               r.created_at
+        FROM reviews r
+                 JOIN users u ON u.id = r.reviewer_id
+        WHERE r.reviewee_id = #{revieweeId}
+          AND r.status = 'VISIBLE'
+        <if test="rating != null">
+            AND r.rating = #{rating}
+        </if>
+        ORDER BY r.created_at DESC, r.id DESC
+    </select>
+
+    <select id="countByRating" resultType="com.graduation.backend.review.query.RatingCountRow">
+        SELECT r.rating AS rating,
+               COUNT(*) AS total
+        FROM reviews r
+        WHERE r.reviewee_id = #{revieweeId}
+          AND r.status = 'VISIBLE'
+        GROUP BY r.rating
+    </select>
+
+</mapper>
