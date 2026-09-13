@@ -34,8 +34,11 @@ public class SecurityConfig {
     static final String[] PUBLIC_POST = {"/api/v1/auth/wechat-login", "/api/v1/auth/refresh"};
     // 商品搜索与详情契约标注 security: []，必须精确到单段：
     // 写成 /api/v1/items/** 会把 /api/v1/items/{itemId}/favorite-status 也放成匿名可访问。
+    // 评价列表与信用摘要同样标注 security: []，也用单段 * 精确匹配到具体路径。
     static final String[] PUBLIC_GET = {
             "/api/v1/users/*/public",
+            "/api/v1/users/*/reviews",
+            "/api/v1/users/*/credit",
             "/api/v1/categories/tree",
             "/api/v1/items",
             "/api/v1/items/*"};

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  审计日志查询，只读。分页由 PaginationInnerInterceptor 追加 LIMIT，SQL 里不写。
+  所有条件均可选；时间范围两端都含（契约 from/to 为含端点）。
+  detail_json 原样取出由响应层解析，写入时已完成脱敏。
+-->
+<mapper namespace="com.graduation.backend.admin.query.AuditLogQueryMapper">
+
+    <select id="selectAuditLogs" resultType="com.graduation.backend.admin.query.AuditLogRow">
+        SELECT a.id,
+               a.operator_id,
+               u.nickname AS operator_nickname,
+               u.avatar_url AS operator_avatar_url,
+               a.action,
+               a.target_type,
+               a.target_id,
+               a.request_id,
+               a.detail_json,
+               a.created_at
+        FROM audit_logs a
+                 JOIN users u ON u.id = a.operator_id
+        <where>
+            <if test="operatorId != null">
+                AND a.operator_id = #{operatorId}
+            </if>
+            <if test="action != null">
+                AND a.action = #{action}
+            </if>
+            <if test="targetType != null">
+                AND a.target_type = #{targetType}
+            </if>
+            <if test="targetId != null">
+                AND a.target_id = #{targetId}
+            </if>
+            <if test="from != null">
+                AND a.created_at &gt;= #{from}
+            </if>
+            <if test="to != null">
+                AND a.created_at &lt;= #{to}
+            </if>
+        </where>
+        ORDER BY a.created_at DESC, a.id DESC
+    </select>
+
+</mapper>

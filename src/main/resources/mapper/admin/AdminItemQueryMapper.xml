@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  管理端商品查询。分页由 PaginationInnerInterceptor 追加 LIMIT，SQL 里不写。
+  不限制 status：管理端要能看到草稿、下架、已售与已删除的商品。
+  多状态用 IN 展开；keyword 由调用方转义（ESCAPE '!'）。
+-->
+<mapper namespace="com.graduation.backend.admin.query.AdminItemQueryMapper">
+
+    <select id="selectItems" resultType="com.graduation.backend.admin.query.AdminItemRow">
+        SELECT i.id,
+               i.title,
+               i.price,
+               i.status,
+               i.seller_id,
+               u.nickname AS seller_nickname,
+               u.avatar_url AS seller_avatar_url,
+               i.category_id,
+               cat.name AS category_name,
+               i.campus_id,
+               c.name AS campus_name,
+               i.admin_lock,
+               i.off_shelf_reason,
+               i.favorite_count,
+               i.view_count,
+               i.created_at,
+               i.updated_at
+        FROM items i
+                 JOIN users u ON u.id = i.seller_id
+                 LEFT JOIN categories cat ON cat.id = i.category_id
+                 LEFT JOIN campuses c ON c.id = i.campus_id
+        <where>
+            <if test="statuses != null and statuses.size() > 0">
+                AND i.status IN
+                <foreach item="status" collection="statuses" open="(" separator="," close=")">
+                    #{status}
+                </foreach>
+            </if>
+            <if test="sellerId != null">
+                AND i.seller_id = #{sellerId}
+            </if>
+            <if test="keyword != null">
+                AND i.title LIKE #{keyword} ESCAPE '!'
+            </if>
+        </where>
+        ORDER BY i.created_at DESC, i.id DESC
+    </select>
+
+</mapper>

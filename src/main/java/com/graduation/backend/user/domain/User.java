@@ -18,6 +18,7 @@ import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 
 /**
@@ -134,6 +135,36 @@ public class User {
     public void bindCampus(Campus campus, Instant now) {
         this.campus = campus;
         this.updatedAt = now;
+    }
+
+    /**
+     * 用评价模块算出的聚合值覆盖信用汇总。
+     *
+     * <p>聚合值由数据库按 {@code VISIBLE} 评价算出，这里只负责落库：
+     * 平均分统一保留两位小数（与列定义 {@code DECIMAL(3,2)} 一致），没有评价时是 0.00 而不是 null。
+     */
+    public void applyRating(BigDecimal averageRating, long reviewCount, Instant now) {
+        this.averageRating = averageRating == null
+                ? BigDecimal.ZERO.setScale(2)
+                : averageRating.setScale(2, RoundingMode.HALF_UP);
+        this.reviewCount = Math.toIntExact(reviewCount);
+        this.updatedAt = now;
+    }
+
+    /** 管理员禁用账号：已有 Token 的请求会在各服务层被 {@code USER_DISABLED} 拦下。 */
+    public void disable(Instant now) {
+        this.status = UserStatus.DISABLED;
+        this.updatedAt = now;
+    }
+
+    /** 管理员恢复账号。 */
+    public void enable(Instant now) {
+        this.status = UserStatus.ACTIVE;
+        this.updatedAt = now;
+    }
+
+    public boolean isDisabled() {
+        return status == UserStatus.DISABLED;
     }
 
     public boolean isAdmin() {

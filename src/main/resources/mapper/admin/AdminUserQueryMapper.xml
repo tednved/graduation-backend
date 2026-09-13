@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  管理端用户查询。分页由 PaginationInnerInterceptor 追加 LIMIT，SQL 里不写。
+  刻意不查 openid：契约要求管理端响应也不返回登录标识，不查就不可能漏。
+  关键字同时匹配昵称与手机号，使用方已用 ESCAPE '!' 转义 % 与 _。
+-->
+<mapper namespace="com.graduation.backend.admin.query.AdminUserQueryMapper">
+
+    <sql id="userColumns">
+        u.id,
+        u.nickname,
+        u.avatar_url,
+        u.phone,
+        u.role,
+        u.status,
+        u.campus_id,
+        c.name AS campus_name,
+        u.certification_status,
+        u.average_rating,
+        u.review_count,
+        u.created_at,
+        u.last_login_at
+    </sql>
+
+    <select id="selectUsers" resultType="com.graduation.backend.admin.query.AdminUserRow">
+        SELECT <include refid="userColumns"/>
+        FROM users u
+                 LEFT JOIN campuses c ON c.id = u.campus_id
+        <where>
+            <if test="keyword != null">
+                AND (u.nickname LIKE #{keyword} ESCAPE '!' OR u.phone LIKE #{keyword} ESCAPE '!')
+            </if>
+            <if test="status != null">
+                AND u.status = #{status}
+            </if>
+            <if test="certificationStatus != null">
+                AND u.certification_status = #{certificationStatus}
+            </if>
+        </where>
+        ORDER BY u.created_at DESC, u.id DESC
+    </select>
+
+    <select id="selectById" resultType="com.graduation.backend.admin.query.AdminUserRow">
+        SELECT <include refid="userColumns"/>
+        FROM users u
+                 LEFT JOIN campuses c ON c.id = u.campus_id
+        WHERE u.id = #{id}
+    </select>
+
+</mapper>

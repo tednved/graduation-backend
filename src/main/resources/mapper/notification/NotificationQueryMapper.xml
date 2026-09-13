@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  站内消息列表。分页由 PaginationInnerInterceptor 追加 LIMIT，SQL 里不写。
+  user_id 过滤是硬条件：越权读取不靠应用层兜底。
+  read 参数是「已读状态」筛选：true 只看已读，false 只看未读，省略表示全部。
+-->
+<mapper namespace="com.graduation.backend.notification.query.NotificationQueryMapper">
+
+    <select id="selectNotifications" resultType="com.graduation.backend.notification.query.NotificationRow">
+        SELECT n.id,
+               n.type,
+               n.title,
+               n.content,
+               n.biz_type,
+               n.biz_id,
+               n.read_at,
+               n.created_at
+        FROM notifications n
+        WHERE n.user_id = #{userId}
+        <if test="type != null">
+            AND n.type = #{type}
+        </if>
+        <if test="read != null">
+            <choose>
+                <when test="read">
+                    AND n.read_at IS NOT NULL
+                </when>
+                <otherwise>
+                    AND n.read_at IS NULL
+                </otherwise>
+            </choose>
+        </if>
+        ORDER BY n.created_at DESC, n.id DESC
+    </select>
+
+</mapper>
