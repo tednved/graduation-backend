@@ -8,7 +8,7 @@
 | 分支 | `feat/BE-MVP-03-trade` |
 | 基线 | `origin/main` = `ce30414`（BE-MVP-02 合并后的日志提交；契约 API-01 冻结版 / Flyway V6） |
 | PR | [#7](https://github.com/tednved/graduation-backend/pull/7)（Draft） |
-| 状态 | **REVIEW** —— 待项目负责人审查与合并；按约定 Agent 不登记 `DONE`。已按负责人 2026-09-13 的审查意见修复 2/3/4/6 项，见 §11 |
+| 状态 | **DONE** —— PR #7 已 squash 合并为 `b4b622d`；真实 MySQL 60/60、契约校验和负责人 GUI 运行验收通过 |
 | 契约源 | `backend/openapi.yaml`（**本 PR 未修改契约**，未新增迁移） |
 
 本任务闭合「下单 → 接单/拒单 → 交付 → 收货」订单闭环，并补齐评价、站内消息与未读红点、必要管理端（用户分页与禁用/恢复、商品分页、审计查询）。
