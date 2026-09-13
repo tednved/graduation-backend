@@ -190,7 +190,7 @@
 | order | `POST /orders`、`GET /orders/{id}`、`POST /orders/{id}/confirm`、`POST /orders/{id}/reject`、`POST /orders/{id}/cancel`、`POST /orders/{id}/deliver`、`POST /orders/{id}/receive`、`GET /users/me/orders` | BE-08 |
 | review | `POST /reviews`、`GET /orders/{id}/review-eligibility`、`GET /users/{id}/reviews`、**`GET /users/{id}/credit`** | BE-09 |
 | notification | `GET /notifications`、`GET /notifications/unread-count`、`PUT /notifications/{id}/read`、`PUT /notifications/read-all` | BE-09 |
-| admin | `GET /admin/users`、`POST /admin/users/{id}/disable`、`POST /admin/users/{id}/enable`、`GET /admin/items`、`GET /admin/audit-logs` | BE-10 |
+| admin | `GET /admin/users`、`POST /admin/users/{id}/disable`、`POST /admin/users/{id}/enable`、`GET /admin/items`、`GET /admin/orders`、`GET /admin/orders/{id}`、`GET /admin/audit-logs` | BE-10 / QA-01 |
 
 **唯一所有权提示**：`GET /users/{id}/credit` 由 **BE-09（review 模块）**实现并拥有。路径以 `/users/` 开头，容易与 BE-04 的 user 模块冲突，BE-04 不得重复实现；BE-04 只拥有 `/users/me`、`/users/{userId}/public`。
 
@@ -226,6 +226,16 @@
 
 已同步：总纲 §8.6（修改商品）、`openapi.yaml`（`put:` 描述与 `UpdateItemRequest` 的 `required`/描述）、后端实现与测试。
 依据：§8.6；§4 变更流程第 1 条（先改总纲，再改契约）。
+
+### 3.2 个人订单与管理员监管订单分域（2026-09-13 裁定）
+
+- `GET /orders/{id}` 只允许订单买家或卖家；ADMIN 角色不会扩大个人订单权限。
+- 管理员查看其他用户订单必须使用 `GET /admin/orders` 与 `GET /admin/orders/{id}`。
+- 管理端列表同时返回买家、卖家和商品快照；管理详情复用订单快照/时间线，但 `allowedActions` 固定为空。
+- 管理接口只读，不允许管理员借角色执行接单、拒单、取消、交付、收货或评价。
+- 管理员自己的买入/卖出订单继续使用 `/users/me/orders` 与 `/orders/{id}`，不会混入全站监管语义。
+
+依据：负责人 2026-09-13 裁定；总纲 §8.8、§8.11。
 
 ---
 

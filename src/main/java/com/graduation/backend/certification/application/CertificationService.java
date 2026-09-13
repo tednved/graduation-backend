@@ -112,6 +112,7 @@ public class CertificationService {
     @Transactional
     public CertificationResponse approve(Long operatorId, Long certificationId) {
         Certification certification = lockPending(certificationId);
+        requireNotSelfReview(certification, operatorId);
         Instant now = clock.instant();
         certification.approve(operatorId, now);
         userService.requireUser(certification.getUserId())
@@ -124,6 +125,7 @@ public class CertificationService {
     @Transactional
     public CertificationResponse reject(Long operatorId, Long certificationId, String reason) {
         Certification certification = lockPending(certificationId);
+        requireNotSelfReview(certification, operatorId);
         Instant now = clock.instant();
         certification.reject(operatorId, reason, now);
         userService.requireUser(certification.getUserId())
@@ -136,6 +138,18 @@ public class CertificationService {
     private Certification lockPending(Long certificationId) {
         return certificationRepository.findByIdForUpdate(certificationId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "认证申请不存在"));
+    }
+
+    /**
+     * 管理员不能审核自己提交的申请。
+     *
+     * <p>与「不能禁用自己的账号」是同一条对称约束：审核权不能用来给自己发认证。
+     * 通过和驳回都要挡——只挡通过等于把出口留给「反复驳回自己」。
+     */
+    private void requireNotSelfReview(Certification certification, Long operatorId) {
+        if (certification.getUserId().equals(operatorId)) {
+            throw new BusinessException(ErrorCode.AUTH_FORBIDDEN, "不能审核自己提交的认证申请");
+        }
     }
 
     private CertificationResponse toResponse(CertificationListRow row, Map<Long, CampusRefResponse> campuses) {
