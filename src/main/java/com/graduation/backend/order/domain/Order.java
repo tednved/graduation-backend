@@ -237,7 +237,14 @@ public class Order {
         }
     }
 
-    private void requireSeller(Long actorId) {
+    /**
+     * 校验操作人是本单卖家。
+     *
+     * <p>公开给应用层：接单要同时检查商品状态，必须先判身份再碰商品，否则非参与方能靠
+     * 商品状态的错误码反推订单进度（403 与 409 的区别本身就是信息）。身份规则只有这一份实现，
+     * 应用层不得自行判断买卖双方。
+     */
+    public void requireSeller(Long actorId) {
         requireParticipant(actorId);
         if (!isSeller(actorId)) {
             throw new BusinessException(ErrorCode.ORDER_OPERATION_FORBIDDEN, "该操作只能由卖家执行");

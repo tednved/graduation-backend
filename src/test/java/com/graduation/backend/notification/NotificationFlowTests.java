@@ -1,11 +1,17 @@
 package com.graduation.backend.notification;
 
+import com.graduation.backend.notification.application.NotificationMessage;
+import com.graduation.backend.notification.domain.NotificationType;
 import com.graduation.backend.order.OrderTestSupport;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
@@ -26,6 +32,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @EnabledIf("databaseConfigured")
 class NotificationFlowTests extends OrderTestSupport {
+
+    @Autowired
+    private ApplicationEventPublisher eventPublisher;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @Test
     @DisplayName("下单通知卖家、接单通知买家，未读数随标记已读变化且标记操作幂等")
@@ -194,5 +206,34 @@ class NotificationFlowTests extends OrderTestSupport {
         mockMvc.perform(get("/api/v1/notifications")
                         .header(AUTHORIZATION, bearer(accessTokenOf(login(code)))))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("单条消息写入失败不传播给业务调用方：业务事务照常提交，同一批其余消息照常落库")
+    void notificationWriteFailureIsIsolated() throws Exception {
+        String code = "notif-broken-writer";
+        String userId = userIdOf(login(code));
+        // 不存在的外键目标：这条消息的 INSERT 必然失败，与 sql_mode 是否严格无关。
+        long missingUserId = 999999999L;
+
+        // 事件在业务事务提交后才投递，所以这一行「正常返回」本身就等于「业务已提交」。
+        // 若消息写入异常泄漏到提交阶段，异常会从这里抛回调用方——业务明明成功了，调用方却收到 500。
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            eventPublisher.publishEvent(new NotificationMessage(missingUserId, NotificationType.SYSTEM,
+                    "写不进去的消息", "内容", NotificationMessage.BIZ_TYPE_ORDER, 1L));
+            eventPublisher.publishEvent(new NotificationMessage(Long.valueOf(userId), NotificationType.SYSTEM,
+                    "正常消息", "内容", NotificationMessage.BIZ_TYPE_ORDER, 1L));
+        });
+
+        // 失败被隔离在单条消息上：坏的那条没有落库，同一次提交里的好那条照常写入。
+        Integer written = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM notifications WHERE user_id = ?",
+                Integer.class, Long.valueOf(userId));
+        assertThat(written).isEqualTo(1);
+        mockMvc.perform(get("/api/v1/notifications")
+                        .header(AUTHORIZATION, bearer(accessTokenOf(login(code)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items", hasSize(1)))
+                .andExpect(jsonPath("$.data.items[0].title").value("正常消息"));
     }
 }

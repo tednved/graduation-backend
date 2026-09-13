@@ -151,6 +151,9 @@ public class OrderApplicationService {
     public OrderDetailResponse confirm(Long userId, Long orderId) {
         User actor = userService.requireActiveUser(userId);
         Order order = requireOrderForUpdate(orderId);
+        // 身份必须先于商品状态判定：非参与方对任何状态的订单都只应得到 403，
+        // 否则「409 商品不处于预留」会变成一条可用来探测订单进度的侧信道。
+        order.requireSeller(actor.getId());
         Item item = requireItemForUpdate(order.getItemId());
         if (item.getStatus() != ItemStatus.RESERVED) {
             throw new BusinessException(ErrorCode.ORDER_ILLEGAL_STATUS_TRANSITION, "商品当前不处于预留状态，无法接单");

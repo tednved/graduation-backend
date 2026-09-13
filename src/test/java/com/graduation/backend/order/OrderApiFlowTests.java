@@ -354,4 +354,33 @@ class OrderApiFlowTests extends OrderTestSupport {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items", hasSize(0)));
     }
+
+    @Test
+    @DisplayName("接单先判身份再判商品状态：非参与方一律 403，不靠状态错误码泄漏订单进度")
+    void confirmChecksIdentityBeforeItemState() throws Exception {
+        String seller = certifiedToken("order-confirm-order-seller");
+        String buyer = certifiedToken("order-confirm-order-buyer");
+        String stranger = certifiedToken("order-confirm-order-stranger");
+        PublishedItem item = publishItem(seller, "33.00");
+        // 走到终态后商品已是 SOLD，不再是 RESERVED。
+        String orderId = completeOrder(seller, buyer, item.itemId());
+        assertThat(itemStatus(item.itemId())).isEqualTo("SOLD");
+
+        // 关键回归：陌生人本不该看到「商品不处于预留」这条状态信息。
+        // 若先判商品状态，这里会得到 409 ORDER_ILLEGAL_STATUS_TRANSITION，
+        // 于是 403 与 409 的差别就成了一条可用来探测订单进度的侧信道。
+        mockMvc.perform(get("/api/v1/orders/{id}", orderId).header(AUTHORIZATION, bearer(stranger)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ORDER_OPERATION_FORBIDDEN"));
+        mockMvc.perform(post("/api/v1/orders/{id}/confirm", orderId)
+                        .header(AUTHORIZATION, bearer(stranger)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ORDER_OPERATION_FORBIDDEN"));
+
+        // 卖家本人对已终结订单接单，才是状态冲突——同一个终态下两种身份得到两种错误码。
+        mockMvc.perform(post("/api/v1/orders/{id}/confirm", orderId)
+                        .header(AUTHORIZATION, bearer(seller)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("ORDER_ILLEGAL_STATUS_TRANSITION"));
+    }
 }
