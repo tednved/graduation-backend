@@ -200,7 +200,7 @@ class OrderApiFlowTests extends OrderTestSupport {
     }
 
     @Test
-    @DisplayName("非参与方看不到订单详情，也不能执行任何订单命令；管理员可以查看")
+    @DisplayName("非参与方看不到订单详情，也不能执行任何订单命令；管理员不是参与方也看不到")
     void onlyParticipantsCanAccessOrder() throws Exception {
         String seller = certifiedToken("order-access-seller");
         String buyer = certifiedToken("order-access-buyer");
@@ -216,9 +216,10 @@ class OrderApiFlowTests extends OrderTestSupport {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("ORDER_OPERATION_FORBIDDEN"));
 
+        // 管理员账号本身也可以是买家/卖家，用角色放行会让任何管理员读到无关订单的全部详情。
         mockMvc.perform(get("/api/v1/orders/{id}", orderId).header(AUTHORIZATION, bearer(adminToken())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.id").value(orderId));
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ORDER_OPERATION_FORBIDDEN"));
 
         mockMvc.perform(get("/api/v1/orders/{id}", orderId))
                 .andExpect(status().isUnauthorized());

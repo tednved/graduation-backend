@@ -1283,7 +1283,7 @@ paths:
       operationId: getOrderDetail
       x-owner-task: BE-08
       summary: 获取订单详情
-      description: 仅买家、卖家或管理员可见，否则 `ORDER_OPERATION_FORBIDDEN`。使用下单时的不可变快照字段，返回事件时间线与 `allowedActions`。前端按 `allowedActions` 展示按钮，后端每次仍重新校验。
+      description: 仅买家或卖家可见，否则 `ORDER_OPERATION_FORBIDDEN`；管理员不是订单的天然参与方，同样需要是买家或卖家才可见（管理端的全量订单视图走管理端接口）。使用下单时的不可变快照字段，返回事件时间线与 `allowedActions`。前端按 `allowedActions` 展示按钮，后端每次仍重新校验。
       security: [{bearerAuth: []}]
       parameters:
         - $ref: '#/components/parameters/XRequestId'
