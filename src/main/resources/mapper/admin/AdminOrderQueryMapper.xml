@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.graduation.backend.admin.query.AdminOrderQueryMapper">
+    <select id="selectOrders" resultType="com.graduation.backend.admin.query.AdminOrderRow">
+        SELECT o.id AS order_id, o.order_no, o.status, o.trade_mode, o.amount,
+               o.item_id, s.item_title, s.item_image_url, s.item_price,
+               o.buyer_id, buyer.nickname AS buyer_nickname, buyer.avatar_url AS buyer_avatar_url,
+               o.seller_id, seller.nickname AS seller_nickname, seller.avatar_url AS seller_avatar_url,
+               o.created_at, o.updated_at
+        FROM orders o
+        JOIN order_snapshots s ON s.order_id = o.id
+        JOIN users buyer ON buyer.id = o.buyer_id
+        JOIN users seller ON seller.id = o.seller_id
+        <where>
+            <if test="status != null">AND o.status = #{status}</if>
+            <if test="buyerId != null">AND o.buyer_id = #{buyerId}</if>
+            <if test="sellerId != null">AND o.seller_id = #{sellerId}</if>
+            <if test="keyword != null">
+                AND (o.order_no LIKE #{keyword} ESCAPE '!' OR s.item_title LIKE #{keyword} ESCAPE '!')
+            </if>
+        </where>
+        ORDER BY o.created_at DESC, o.id DESC
+    </select>
+</mapper>
