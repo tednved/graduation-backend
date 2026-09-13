@@ -398,7 +398,7 @@ paths:
       operationId: approveCertification
       x-owner-task: BE-05
       summary: 通过认证申请（管理员）
-      description: 锁定读取 `PENDING` 申请；置 `APPROVED`，写审核人与时间，同步用户认证状态，写审计。重复审核返回 `CERTIFICATION_ALREADY_REVIEWED`。
+      description: 锁定读取 `PENDING` 申请；置 `APPROVED`，写审核人与时间，同步用户认证状态，写审计。重复审核返回 `CERTIFICATION_ALREADY_REVIEWED`。不能审核自己提交的申请（`AUTH_FORBIDDEN`）。
       security: [{bearerAuth: []}]
       parameters:
         - $ref: '#/components/parameters/XRequestId'
@@ -433,7 +433,7 @@ paths:
       operationId: rejectCertification
       x-owner-task: BE-05
       summary: 驳回认证申请（管理员）
-      description: 与通过相同的前置与副作用，但必须提供 2～200 字原因，用户认证状态同步为 `REJECTED`。
+      description: 与通过相同的前置与副作用（含不能审核自己提交的申请），但必须提供 2～200 字原因，用户认证状态同步为 `REJECTED`。
       security: [{bearerAuth: []}]
       parameters:
         - $ref: '#/components/parameters/XRequestId'
@@ -1059,7 +1059,10 @@ paths:
       operationId: adminTakeItemOffShelf
       x-owner-task: BE-10
       summary: 强制下架并锁定商品（管理员）
-      description: 请求必须带 2～200 字原因；置 `OFF_SHELF`、`adminLock=true` 与原因，创建卖家通知，写审计。
+      description: >-
+        请求必须带 2～200 字原因；置 `OFF_SHELF`、`adminLock=true` 与原因，创建卖家通知，写审计。
+        存在进行中的订单，或商品已 `SOLD` 时返回 `ITEM_NOT_EDITABLE`：下架会让订单再也走不完
+        （接单/拒单/取消/收货都要求商品为 `RESERVED`）。已删除商品返回 404。
       security: [{bearerAuth: []}]
       parameters:
         - $ref: '#/components/parameters/XRequestId'
@@ -1091,6 +1094,8 @@ paths:
           $ref: '#/components/responses/Error403'
         '404':
           $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
 

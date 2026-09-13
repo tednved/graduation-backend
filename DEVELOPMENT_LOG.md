@@ -23,6 +23,7 @@
 | BE-MVP-01 | `feat/BE-MVP-01-core` | Claude | DONE | 2026-09-11 | [#5](https://github.com/tednved/graduation-backend/pull/5) | `docs/handoffs/BE-MVP-01.md` | API-01 `e15baa77` / Flyway V6 | 2026-09-12 |
 | BE-MVP-02 | `feat/BE-MVP-02-item-favorite` | Claude | DONE | 2026-09-12 | [#6](https://github.com/tednved/graduation-backend/pull/6) | `docs/handoffs/BE-MVP-02.md` | 合并提交 `f4ce306`；真实 MySQL 36/36、联调 22/22、GUI 冒烟通过 | 2026-09-12 |
 | BE-MVP-03 | `feat/BE-MVP-03-trade` | Claude | DONE | 2026-09-13 | [#7](https://github.com/tednved/graduation-backend/pull/7) | `docs/handoffs/BE-MVP-03.md` | 合并提交 `b4b622d`；真实 MySQL 60/60、契约 51 操作、负责人 GUI 验收通过 | 2026-09-13 |
+| QA-01 | `fix/QA-01-final` | Claude | REVIEW | 2026-09-13 | 本 PR | `docs/handoffs/QA-01.md` | 无 Flyway 变化；强下架补 409、审核补自审约束；真实 MySQL 62/62 | 2026-09-13 |
 
 ## 合并后更新要求
 
