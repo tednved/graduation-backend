@@ -200,7 +200,7 @@ class OrderApiFlowTests extends OrderTestSupport {
     }
 
     @Test
-    @DisplayName("非参与方看不到订单详情，也不能执行任何订单命令；管理员可以查看")
+    @DisplayName("非参与方看不到订单详情，也不能执行任何订单命令；管理员不是参与方也看不到")
     void onlyParticipantsCanAccessOrder() throws Exception {
         String seller = certifiedToken("order-access-seller");
         String buyer = certifiedToken("order-access-buyer");
@@ -216,9 +216,10 @@ class OrderApiFlowTests extends OrderTestSupport {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("ORDER_OPERATION_FORBIDDEN"));
 
+        // 管理员账号本身也可以是买家/卖家，用角色放行会让任何管理员读到无关订单的全部详情。
         mockMvc.perform(get("/api/v1/orders/{id}", orderId).header(AUTHORIZATION, bearer(adminToken())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.id").value(orderId));
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ORDER_OPERATION_FORBIDDEN"));
 
         mockMvc.perform(get("/api/v1/orders/{id}", orderId))
                 .andExpect(status().isUnauthorized());
@@ -382,5 +383,58 @@ class OrderApiFlowTests extends OrderTestSupport {
                         .header(AUTHORIZATION, bearer(seller)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("ORDER_ILLEGAL_STATUS_TRANSITION"));
+    }
+
+    @Test
+    @DisplayName("管理员不能强制下架有进行中订单或已售出的商品：下架会让订单再也走不完")
+    void adminCannotOffShelfItemsBoundToOrders() throws Exception {
+        String adminToken = adminToken();
+        String seller = certifiedToken("offshelf-guard-seller");
+        String buyer = certifiedToken("offshelf-guard-buyer");
+
+        // 已预订：商品一旦被下架，接单/拒单/取消/收货四条出口都会要求 RESERVED 而被拦下，
+        // 订单就永久停在 PENDING_CONFIRMATION，没有任何任务能把它救回来。
+        PublishedItem reserved = publishItem(seller, "66.00");
+        String orderId = readString(
+                createOrder(buyer, reserved.itemId(), newRequestId()).getResponse().getContentAsString(),
+                "$.data.id");
+        assertThat(itemStatus(reserved.itemId())).isEqualTo("RESERVED");
+
+        mockMvc.perform(post("/api/v1/admin/items/{id}/off-shelf", reserved.itemId())
+                        .header(AUTHORIZATION, bearer(adminToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reasonBody("强制下架已预订商品")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("ITEM_NOT_EDITABLE"));
+
+        // 拒绝必须是「什么都没发生」：商品与订单原样，也不该留下一条假的下架审计。
+        assertThat(itemStatus(reserved.itemId())).isEqualTo("RESERVED");
+        assertThat(orderStatus(orderId)).isEqualTo("PENDING_CONFIRMATION");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM audit_logs WHERE action = ? AND target_id = ?",
+                Integer.class, "ITEM_ADMIN_OFF_SHELF", Long.valueOf(reserved.itemId()))).isZero();
+
+        // 守卫没有挡住正常链路：这笔订单仍然能一路走到收货。
+        advanceToCompleted(seller, buyer, orderId);
+        assertThat(itemStatus(reserved.itemId())).isEqualTo("SOLD");
+
+        // 已售出：订单已完成，商品必须保持 SOLD，同样不能被改成 OFF_SHELF。
+        mockMvc.perform(post("/api/v1/admin/items/{id}/off-shelf", reserved.itemId())
+                        .header(AUTHORIZATION, bearer(adminToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reasonBody("强制下架已售出商品")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("ITEM_NOT_EDITABLE"));
+        assertThat(itemStatus(reserved.itemId())).isEqualTo("SOLD");
+
+        // 没有订单的在售商品仍可强制下架，守卫不能误伤正常的管理动作。
+        PublishedItem onSale = publishItem(seller, "77.00");
+        mockMvc.perform(post("/api/v1/admin/items/{id}/off-shelf", onSale.itemId())
+                        .header(AUTHORIZATION, bearer(adminToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reasonBody("违规内容下架")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("OFF_SHELF"))
+                .andExpect(jsonPath("$.data.adminLock").value(true));
     }
 }

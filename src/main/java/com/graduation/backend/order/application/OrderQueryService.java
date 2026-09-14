@@ -78,16 +78,19 @@ public class OrderQueryService {
     /**
      * 订单详情。
      *
-     * <p>仅买家、卖家或管理员可见。契约把「不可见」与「无权」统一成
-     * {@code ORDER_OPERATION_FORBIDDEN}（403），因此非参与方拿到的是 403 而不是 404——
-     * 这里不对无关用户伪装成「不存在」。
+     * <p>仅买家或卖家可见。管理员不是订单的天然参与方——管理员账号同样可以下单购物，
+     * 用「是不是管理员」放行会让任何管理员读到与自己无关的订单详情（金额、双方、时间线），
+     * 因此这里只认参与方；管理端的全量订单视图走管理端接口，不靠这条路径。
+     *
+     * <p>契约把「不可见」与「无权」统一成 {@code ORDER_OPERATION_FORBIDDEN}（403），
+     * 因此非参与方拿到的是 403 而不是 404——这里不对无关用户伪装成「不存在」。
      */
     @Transactional(readOnly = true)
     public OrderDetailResponse detail(Long viewerId, Long orderId) {
         User viewer = userService.requireActiveUser(viewerId);
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "订单不存在"));
-        if (!order.isParticipant(viewer.getId()) && !viewer.isAdmin()) {
+        if (!order.isParticipant(viewer.getId())) {
             throw new BusinessException(ErrorCode.ORDER_OPERATION_FORBIDDEN, "无权查看该订单");
         }
         return assemble(order, viewer.getId());

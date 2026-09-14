@@ -237,6 +237,50 @@ class CoreApiFlowTests extends RealMySqlTestBase {
     }
 
     @Test
+    @DisplayName("管理员不能审核自己提交的认证申请，别的管理员仍可正常审核")
+    void adminCannotReviewOwnCertification() throws Exception {
+        String loginJson = login("flow-cert-self-admin");
+        String token = accessTokenOf(loginJson);
+        Long selfId = Long.valueOf(readString(loginJson, "$.data.user.id"));
+        // 令牌在提权前签发，但角色按请求时读到的实体判定，所以这个 token 提权后就是管理员。
+        jdbcTemplate.update("UPDATE users SET role = 'ADMIN' WHERE id = ?", selfId);
+
+        MvcResult submitted = mockMvc.perform(post("/api/v1/certifications")
+                        .header(AUTHORIZATION, bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(submitBody()))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String certificationId = readString(submitted.getResponse().getContentAsString(), "$.data.id");
+
+        // 通过和驳回是同一个出口的两端，只挡住一端等于把另一端的权力留给自己。
+        mockMvc.perform(post("/api/v1/admin/certifications/{id}/approve", certificationId)
+                        .header(AUTHORIZATION, bearer(token)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("AUTH_FORBIDDEN"));
+        mockMvc.perform(post("/api/v1/admin/certifications/{id}/reject", certificationId)
+                        .header(AUTHORIZATION, bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"自己驳回自己的申请\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("AUTH_FORBIDDEN"));
+
+        // 被拒绝的审核不能留下任何痕迹：申请仍是 PENDING，用户认证状态也没变。
+        mockMvc.perform(get("/api/v1/certifications/me/latest").header(AUTHORIZATION, bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PENDING"));
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM audit_logs WHERE target_type = 'CERTIFICATION' AND target_id = ?",
+                Integer.class, Long.valueOf(certificationId))).isZero();
+
+        // 约束只针对「自己审自己」，别的管理员审核同一条申请不受影响。
+        mockMvc.perform(post("/api/v1/admin/certifications/{id}/approve", certificationId)
+                        .header(AUTHORIZATION, bearer(adminToken())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"));
+    }
+
+    @Test
     @DisplayName("从未提交认证时返回 200 与 NOT_SUBMITTED，而不是 404")
     void latestCertificationIsNotSubmittedWhenAbsent() throws Exception {
         String token = accessTokenOf(login("flow-cert-none"));

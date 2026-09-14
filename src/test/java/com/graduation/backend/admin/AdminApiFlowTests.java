@@ -157,6 +157,50 @@ class AdminApiFlowTests extends OrderTestSupport {
     }
 
     @Test
+    @DisplayName("管理员在专属接口查看全站订单，个人订单详情仍只认买卖双方")
+    void adminOrdersAreSeparatedFromPersonalOrders() throws Exception {
+        String seller = certifiedToken("admin-order-seller");
+        String buyer = certifiedToken("admin-order-buyer");
+        String admin = adminToken();
+        PublishedItem item = publishItem(seller, "88.00");
+        String orderBody = createOrder(buyer, item.itemId(), newRequestId())
+                .getResponse().getContentAsString();
+        String orderId = readString(orderBody, "$.data.id");
+        String buyerId = readString(orderBody, "$.data.buyer.id");
+        String sellerId = readString(orderBody, "$.data.seller.id");
+
+        // 管理员不是参与方时，个人订单接口仍然拒绝，避免角色污染“我的订单”语义。
+        mockMvc.perform(get("/api/v1/orders/{id}", orderId).header(AUTHORIZATION, bearer(admin)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ORDER_OPERATION_FORBIDDEN"));
+
+        mockMvc.perform(get("/api/v1/admin/orders")
+                        .param("keyword", readString(orderBody, "$.data.orderNo"))
+                        .param("buyerId", buyerId)
+                        .param("sellerId", sellerId)
+                        .param("status", "PENDING_CONFIRMATION")
+                        .header(AUTHORIZATION, bearer(admin)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items", hasSize(1)))
+                .andExpect(jsonPath("$.data.items[0].id").value(orderId))
+                .andExpect(jsonPath("$.data.items[0].buyer.id").value(buyerId))
+                .andExpect(jsonPath("$.data.items[0].seller.id").value(sellerId))
+                .andExpect(jsonPath("$.data.items[0].item.itemId").value(item.itemId()));
+
+        // 管理详情包含时间线，但管理上下文永远没有买卖动作。
+        mockMvc.perform(get("/api/v1/admin/orders/{id}", orderId)
+                        .header(AUTHORIZATION, bearer(admin)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(orderId))
+                .andExpect(jsonPath("$.data.allowedActions", hasSize(0)))
+                .andExpect(jsonPath("$.data.events", hasSize(1)));
+
+        mockMvc.perform(get("/api/v1/admin/orders").header(AUTHORIZATION, bearer(seller)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("AUTH_FORBIDDEN"));
+    }
+
+    @Test
     @DisplayName("强制下架与禁用用户都写审计，可按动作与目标筛选")
     void auditLogsRecordAdminWrites() throws Exception {
         String adminToken = adminToken();

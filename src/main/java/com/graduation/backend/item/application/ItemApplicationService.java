@@ -183,7 +183,12 @@ public class ItemApplicationService {
     /**
      * 管理员强制下架并锁定。
      *
-     * <p>已删除的商品返回 404：本接口没有 409，也没必要对不可见资源做状态冲突判定。
+     * <p>只放行「没有交易在途」的商品：存在进行中的订单，或已售出的商品，都按
+     * {@code ITEM_NOT_EDITABLE} 拒绝。下架会把商品置为 {@code OFF_SHELF} 并上锁，而接单、拒单、取消、
+     * 收货四条出口都要求商品处于 {@code RESERVED}，一旦放行订单就永久卡在 {@code PENDING_CONFIRMATION}
+     * 且没有任何任务能把它救回来。守卫复用 {@link #delete} 的同一个计数查询。
+     *
+     * <p>已删除的商品返回 404：不可见资源不需要再做状态冲突判定。
      * 响应按匿名视图组装（{@code allowedActions} 为空数组），避免给管理端返回「可收藏/可购买」这类
      * 与操作者身份无关的动作。
      *
@@ -195,6 +200,12 @@ public class ItemApplicationService {
         Item item = requireItemForUpdate(itemId);
         if (item.getStatus() == ItemStatus.DELETED) {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "商品不存在");
+        }
+        if (itemRepository.countInProgressOrders(itemId) > 0) {
+            throw new BusinessException(ErrorCode.ITEM_NOT_EDITABLE, "商品存在进行中的订单，不能强制下架");
+        }
+        if (item.getStatus() == ItemStatus.SOLD) {
+            throw new BusinessException(ErrorCode.ITEM_NOT_EDITABLE, "商品已售出，不能强制下架");
         }
         item.adminOffShelf(reason, clock.instant());
         auditLogService.record(admin.getId(), "ITEM_ADMIN_OFF_SHELF", "ITEM", item.getId(),

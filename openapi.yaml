@@ -398,7 +398,7 @@ paths:
       operationId: approveCertification
       x-owner-task: BE-05
       summary: 通过认证申请（管理员）
-      description: 锁定读取 `PENDING` 申请；置 `APPROVED`，写审核人与时间，同步用户认证状态，写审计。重复审核返回 `CERTIFICATION_ALREADY_REVIEWED`。
+      description: 锁定读取 `PENDING` 申请；置 `APPROVED`，写审核人与时间，同步用户认证状态，写审计。重复审核返回 `CERTIFICATION_ALREADY_REVIEWED`。不能审核自己提交的申请（`AUTH_FORBIDDEN`）。
       security: [{bearerAuth: []}]
       parameters:
         - $ref: '#/components/parameters/XRequestId'
@@ -433,7 +433,7 @@ paths:
       operationId: rejectCertification
       x-owner-task: BE-05
       summary: 驳回认证申请（管理员）
-      description: 与通过相同的前置与副作用，但必须提供 2～200 字原因，用户认证状态同步为 `REJECTED`。
+      description: 与通过相同的前置与副作用（含不能审核自己提交的申请），但必须提供 2～200 字原因，用户认证状态同步为 `REJECTED`。
       security: [{bearerAuth: []}]
       parameters:
         - $ref: '#/components/parameters/XRequestId'
@@ -1059,7 +1059,10 @@ paths:
       operationId: adminTakeItemOffShelf
       x-owner-task: BE-10
       summary: 强制下架并锁定商品（管理员）
-      description: 请求必须带 2～200 字原因；置 `OFF_SHELF`、`adminLock=true` 与原因，创建卖家通知，写审计。
+      description: >-
+        请求必须带 2～200 字原因；置 `OFF_SHELF`、`adminLock=true` 与原因，创建卖家通知，写审计。
+        存在进行中的订单，或商品已 `SOLD` 时返回 `ITEM_NOT_EDITABLE`：下架会让订单再也走不完
+        （接单/拒单/取消/收货都要求商品为 `RESERVED`）。已删除商品返回 404。
       security: [{bearerAuth: []}]
       parameters:
         - $ref: '#/components/parameters/XRequestId'
@@ -1091,6 +1094,8 @@ paths:
           $ref: '#/components/responses/Error403'
         '404':
           $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
         '500':
           $ref: '#/components/responses/Error500'
 
@@ -1283,7 +1288,7 @@ paths:
       operationId: getOrderDetail
       x-owner-task: BE-08
       summary: 获取订单详情
-      description: 仅买家、卖家或管理员可见，否则 `ORDER_OPERATION_FORBIDDEN`。使用下单时的不可变快照字段，返回事件时间线与 `allowedActions`。前端按 `allowedActions` 展示按钮，后端每次仍重新校验。
+      description: 仅买家或卖家可见，否则 `ORDER_OPERATION_FORBIDDEN`；管理员不是订单的天然参与方，同样需要是买家或卖家才可见（管理端的全量订单视图走管理端接口）。使用下单时的不可变快照字段，返回事件时间线与 `allowedActions`。前端按 `allowedActions` 展示按钮，后端每次仍重新校验。
       security: [{bearerAuth: []}]
       parameters:
         - $ref: '#/components/parameters/XRequestId'
@@ -1872,6 +1877,104 @@ paths:
   # ---------------------------------------------------------------------------
   # 8.11 管理 API
   # ---------------------------------------------------------------------------
+  /admin/orders:
+    get:
+      tags: [admin]
+      operationId: listAdminOrders
+      x-owner-task: QA-01
+      summary: 分页查询全站订单（管理员）
+      description: 管理员专属只读视图，与管理员账号自己的买入/卖出列表分离。支持状态、买家、卖家及订单号/商品标题关键字筛选。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/OrderStatus'
+        - name: buyerId
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/DecimalId'
+        - name: sellerId
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/DecimalId'
+        - name: keyword
+          in: query
+          required: false
+          description: 订单号或商品标题关键字，1～64 字符
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: 全站订单分页
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PageResponse'
+                          - type: object
+                            required: [items]
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/AdminOrderSummary'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /admin/orders/{id}:
+    get:
+      tags: [admin]
+      operationId: getAdminOrderDetail
+      x-owner-task: QA-01
+      summary: 获取全站订单只读详情（管理员）
+      description: 管理员专属读取任意订单；返回快照与时间线，但 `allowedActions` 固定为空，不能借管理身份执行买卖双方动作。
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: 管理员订单详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderDetail'
+        '401':
+          $ref: '#/components/responses/Error401'
+        '403':
+          $ref: '#/components/responses/Error403'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+
   /admin/users:
     get:
       tags: [admin]
@@ -3542,6 +3645,32 @@ components:
     # -------------------------------------------------------------------------
     # 管理
     # -------------------------------------------------------------------------
+    AdminOrderSummary:
+      type: object
+      description: 管理端全站订单条目，同时返回买卖双方；与个人订单的 counterpart 视角分离
+      required: [id, orderNo, status, tradeMode, amount, item, buyer, seller, createdAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/DecimalId'
+        orderNo:
+          type: string
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        tradeMode:
+          $ref: '#/components/schemas/TradeMode'
+        amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        item:
+          $ref: '#/components/schemas/OrderItemSnapshot'
+        buyer:
+          $ref: '#/components/schemas/UserSummary'
+        seller:
+          $ref: '#/components/schemas/UserSummary'
+        createdAt:
+          $ref: '#/components/schemas/UtcInstant'
+        updatedAt:
+          $ref: '#/components/schemas/UtcInstant'
+
     AdminUser:
       type: object
       description: 管理端用户条目。即使对管理员也不返回 openid
